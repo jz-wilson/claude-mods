@@ -1512,3 +1512,73 @@ test('touched only: the tree starts empty and shows just what Claude read or wro
   for (const word of ['README.md', 'notes.md', 'docs', 'src']) expect(all).toContain(word)
   await ui.unmount()
 })
+
+test('touched only: a file written into a new folder shows with that folder', { timeoutMs: 20_000 }, async ($, on) => {
+  const root = '/home/k/proj'
+  const w: World = { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: root, dirs: { [root]: [['a.md', 'file']] }, status: '## main\0', numstat: '' }
+  const clock = world(on, w, [])
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await clock.settle()
+  w.dirs[root] = [['a.md', 'file'], ['newdir', 'dir']]
+  w.dirs[`${root}/newdir`] = [['x.ts', 'file']]
+  await $.tool.call({ tool: 'Write', file_path: `${root}/newdir/x.ts`, content: 'a' } as any)
+  await clock.settle()
+  const shown = await texts(ui)
+  for (const word of ['newdir', 'x.ts']) expect(shown).toContain(word)
+  expect(shown).not.toContain('a.md')
+  await ui.unmount()
+})
+
+test('touched only: a read that moves the tree to a new cwd still shows the file', { timeoutMs: 20_000 }, async ($, on) => {
+  const a = '/home/k/a'
+  const b = '/home/k/b'
+  const w: World = { os: 'linux', env: { HOME: '/home/k' }, cwd: a, top: '', dirs: { [a]: [['a.ts', 'file']], [b]: [['b.ts', 'file'], ['c.ts', 'file']] }, status: '', numstat: '' }
+  const clock = world(on, w, [])
+  await $.session.start({ cwd: a, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await clock.settle()
+  w.cwd = b
+  await $.tool.call({ tool: 'Read', file_path: `${b}/b.ts` } as any)
+  await clock.settle()
+  const shown = await texts(ui)
+  expect(shown).toContain('b.ts')
+  expect(shown).not.toContain('c.ts')
+  await ui.unmount()
+})
+
+test('touched only: a nested file read before a reset is still shown after it', { timeoutMs: 20_000 }, async ($, on) => {
+  const root = '/home/k/proj'
+  const w: World = { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: root, dirs: { [root]: [['src', 'dir'], ['z.md', 'file']], [`${root}/src`]: [['deep.ts', 'file'], ['other.ts', 'file']] }, status: '## main\0', numstat: '' }
+  const clock = world(on, w, [])
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await clock.settle()
+  await $.tool.call({ tool: 'Read', file_path: `${root}/src/deep.ts` } as any)
+  await clock.settle()
+  expect(await texts(ui)).toContain('deep.ts')
+  await ui.press({ key: 'cwd' })
+  await clock.settle()
+  const shown = await texts(ui)
+  expect(shown).toContain('deep.ts')
+  expect(shown).not.toContain('other.ts')
+  await ui.unmount()
+})
+
+test('touched only: reads are recorded even when the activity setting shimmers writes alone', { timeoutMs: 20_000, options: { activity: 'writes' } }, async ($, on) => {
+  const root = '/home/k/proj'
+  const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: root, dirs: { [root]: [['a.md', 'file'], ['b.md', 'file']] }, status: '## main\0', numstat: '' }, [])
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await clock.settle()
+  await $.tool.call({ tool: 'Read', file_path: `${root}/a.md` } as any)
+  await clock.settle()
+  const shown = await texts(ui)
+  expect(shown).toContain('a.md')
+  expect(shown).not.toContain('b.md')
+  await ui.unmount()
+})

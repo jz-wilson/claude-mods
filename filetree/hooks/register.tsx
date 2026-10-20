@@ -119,9 +119,13 @@ let touchedDefault = true
 
 const TOUCHED_LIMIT = 2_000
 
-function remember(t: FileTree, ids: string[]): string[] {
-  const fresh = ids.filter(id => id !== BRANCH_ROW)
-  return fresh.length ? [...t.touched.filter(id => !fresh.includes(id)), ...fresh].slice(-TOUCHED_LIMIT) : t.touched
+// Recorded whatever the activity setting and whatever the root, so the up button and a cwd change still find them.
+async function remember($: EngineInterface, paths: string[]): Promise<void> {
+  if (paths.length === 0) return
+  await patch($, cur => {
+    const touched = [...cur.touched.filter(id => !paths.includes(id)), ...paths].slice(-TOUCHED_LIMIT)
+    return { touched, ...(cur.touchedOnly ? keepTop(cur, cur.expanded, touched) : {}) }
+  })
 }
 let sizeEpoch = 0
 let sizeActive = 0
@@ -313,6 +317,7 @@ async function reset($: EngineInterface, root: string, focus = false): Promise<v
   if (focus) await $.ui.open({ id: PANE, title, focus: true })
   else if (!noDock) await $.ui.open({ id: PANE, title })
   await loadDirs($, [root])
+  if (prev.root ? prev.touchedOnly : touchedDefault) await revealPaths($, prev.touched.filter(p => p !== root && inside(root, p)))
   await detectRepo($)
   await refreshGit($)
 }
@@ -477,10 +482,10 @@ function openDirs(t: FileTree): string[] {
   return t.nodes.filter(n => n.kind === 'dir' && n.loaded && open.has(n.id)).map(n => n.id)
 }
 
-function keepTop(cur: FileTree, expanded: string[]): Partial<FileTree> {
+function keepTop(cur: FileTree, expanded: string[], touched = cur.touched): Partial<FileTree> {
   if (followClaude) return { scroll: null }
   const top = visibleRows(cur)[cur.scroll ?? view.from]?.node.id
-  const at = top ? visibleRows({ ...cur, expanded }).findIndex(r => r.node.id === top) : -1
+  const at = top ? visibleRows({ ...cur, expanded, touched }).findIndex(r => r.node.id === top) : -1
   return at < 0 ? {} : { scroll: at }
 }
 
@@ -520,7 +525,6 @@ async function flash($: EngineInterface, tones: Record<string, string>): Promise
       flashDim: [...dim],
       flashOn: true,
       flashTones: all,
-      touched: remember(cur, unique),
       expanded: [...open],
       ...keepTop(cur, [...open]),
     }
@@ -703,6 +707,7 @@ async function exists($: EngineInterface, path: string): Promise<boolean> {
 async function afterBash($: EngineInterface, jobs: Job[]): Promise<void> {
   const reads = queuedReads
   queuedReads = []
+  await remember($, reads.map(posix))
   if (await followCwd($)) return
   const t = await get($)
   if (!t.root) return
@@ -737,11 +742,12 @@ async function afterBash($: EngineInterface, jobs: Job[]): Promise<void> {
       const ids = new Set(cur.nodes.map(n => n.id))
       return { expanded: cur.expanded.filter(id => ids.has(id)) }
     })
+    await remember($, hits)
     const present = new Set((await get($)).nodes.map(n => n.id))
     const touchTone = actions.find(a => !['commit', 'push', 'add'].includes(a.verb))?.tone ?? 'orange'
     if (showWrites) for (const id of hits) if (present.has(id)) tones[id] = touchTone
   }
-  if (showReads) {
+  if (showReads || fresh.touchedOnly) {
     const found: string[] = []
     for (const r of reads) {
       if (found.length >= READ_REVEAL_LIMIT) break
@@ -750,7 +756,7 @@ async function afterBash($: EngineInterface, jobs: Job[]): Promise<void> {
     if (found.length) {
       await revealPaths($, found)
       const shown = new Set((await get($)).nodes.map(n => n.id))
-      for (const r of found) if (shown.has(r) && !tones[r]) tones[r] = 'purple'
+      if (showReads) for (const r of found) if (shown.has(r) && !tones[r]) tones[r] = 'purple'
     }
   }
   if (showWrites && actions.length) {
@@ -790,22 +796,22 @@ function scheduleScan($: EngineInterface, job: Job): void {
 
 async function touched($: EngineInterface, paths: string[], tone: string, show: boolean): Promise<void> {
   if (tone !== 'purple' && previewed && paths.map(posix).includes(previewed.path)) previewed = null
+  await remember($, paths.map(posix))
   if (await followCwd($)) return
   const t = await get($)
   if (!t.root) return
   const within = paths.map(posix).filter(p => inside(t.root, p))
-  if (within.length === 0) return
+  if (within.length === 0 || (!show && tone === 'purple' && !t.touchedOnly)) return
   if (tone !== 'purple') {
     searchIndex = null
     await staleSizes($, within)
     await revealPaths($, within.map(dirname))
-    await loadDirs($, [...new Set(within.map(dirname))].filter(d => inside(t.root, d)))
+    // Each folder up to the root is listed again, so one the write just created appears in its parent.
+    const dirs = within.flatMap(p => [dirname(p), ...ancestorsOf(dirname(p), t.root)])
+    await loadDirs($, [...new Set([t.root, ...dirs])].filter(d => inside(t.root, d)))
     await refreshGit($)
   } else await revealPaths($, within)
-  if (!show) {
-    await patch($, cur => (cur.root === t.root ? { touched: remember(cur, within) } : {}))
-    return
-  }
+  if (!show) return
   const tones: Record<string, string> = {}
   for (const p of within) tones[p] = tone
   await flash($, tones)
@@ -1254,19 +1260,19 @@ export const register: Register = (on, options) => {
 
   on('tool.call', { tool: 'Read' }, async ($, e, next) => {
     const result = await next(e)
-    if (result.deny || result.isError || e.tool !== 'Read' || !showReads) return result
-    void touched($, [posix(e.file_path)], 'purple', true)
+    if (result.deny || result.isError || e.tool !== 'Read') return result
+    void touched($, [posix(e.file_path)], 'purple', showReads)
     return result
   })
 
   for (const tool of ['Grep', 'Glob'] as const)
     on('tool.call', { tool }, async ($, e, next) => {
       const result = await next(e)
-      if (result.deny || result.isError || !showReads) return result
+      if (result.deny || result.isError) return result
       const names = (result.result as Partial<BuiltinToolResults['Grep']> | undefined)?.filenames
       if (!Array.isArray(names) || names.length === 0) return result
       const cwd = await cwdOf($)
-      void touched($, names.slice(0, SEARCH_REVEAL_LIMIT).map(f => resolve(cwd, posix(f), home)), 'purple', true)
+      void touched($, names.slice(0, SEARCH_REVEAL_LIMIT).map(f => resolve(cwd, posix(f), home)), 'purple', showReads)
       return result
     })
 
