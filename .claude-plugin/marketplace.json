@@ -4,6 +4,7 @@
   "description": "Mods for Claude Code",
   "plugins": [
     { "name": "agent-tree", "source": "./agent-tree" },
-    { "name": "cache-bar", "source": "./cache-bar" }
+    { "name": "cache-bar", "source": "./cache-bar" },
+    { "name": "filetree", "source": "./filetree" }
   ]
 }

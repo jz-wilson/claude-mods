@@ -6,6 +6,7 @@ Mods for Claude Code.
 |---|---|
 | [agent-tree](agent-tree) | Live pane showing the subagent spawn tree as cards: who spawned whom, model, status, task, cost, elapsed time and recent tools. Flags Fable running as a worker and subagents idle for 2 minutes. `/agent-tree` toggles the pane. |
 | [cache-bar](cache-bar) | Status-line bar under your existing status line showing how long the prompt cache stays warm, with a handoff countdown: `cache ▰▰▰▱▱▱▱▱ 23m 182k · handoff in 18m`. Turns yellow at a quarter of the TTL, red at the handoff threshold, and follows the drop to a 5-minute TTL. `/cache-bar:setup` installs it. |
+| [filetree](filetree) | Fork of [data-goblin/claude-code-filetree](https://github.com/data-goblin/claude-code-filetree) that shows only the files Claude touched this session; the header's `◆` button toggles to the whole tree. |
 
 ## Install
 
