@@ -210,9 +210,14 @@ async function readSwitch($: EngineInterface) {
   } catch {
     now = isOff
   }
-  if (now === isOff) return
   isOff = now
-  if (isOff && (await isPaneOpen($))) await $.ui.close({ id: PANE })
+  if (!isOff) return
+  // Checked on every tick while off, so a failed close or a racing open is undone too.
+  if (hasStatus) {
+    hasStatus = false
+    $.ui.status(undefined)
+  }
+  if (await isPaneOpen($)) await $.ui.close({ id: PANE })
 }
 
 // Hides and restores run one at a time in the order asked, so a restore never overtakes a hide.

@@ -1150,9 +1150,9 @@ async function readSwitch($: EngineInterface): Promise<void> {
   } catch {
     now = isOff
   }
-  if (now === isOff) return
   isOff = now
-  if (isOff) await $.ui.close({ id: PANE }).catch(() => undefined)
+  // Checked on every tick while off, so a failed close or a racing open is undone too.
+  if (isOff && (await $.ui.panes()).some(p => p.id === PANE)) await $.ui.close({ id: PANE })
 }
 
 function shortPath(path: string): string {
@@ -1292,7 +1292,7 @@ export const register: Register = (on, options) => {
     on('tool.call', { tool }, async ($, e, next) => {
       const result = await next(e)
       if (isOff || result.deny || result.isError) return result
-      const names =(result.result as Partial<BuiltinToolResults['Grep']> | undefined)?.filenames
+      const names = (result.result as Partial<BuiltinToolResults['Grep']> | undefined)?.filenames
       if (!Array.isArray(names) || names.length === 0) return result
       const cwd = await cwdOf($)
       void touched($, names.slice(0, SEARCH_REVEAL_LIMIT).map(f => resolve(cwd, posix(f), home)), 'purple', showReads)
