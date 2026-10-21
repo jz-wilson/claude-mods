@@ -10,7 +10,19 @@ import { DEFAULTS, renderBar } from '../lib/bar.ts'
 
 type Config = { inner?: string; handoffMinutes?: number; floorTokens?: number }
 
-const configPath = join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'plugins', 'cache-bar', 'config.json')
+const configDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
+const configPath = join(configDir, 'plugins', 'cache-bar', 'config.json')
+// The /mods switchboard turns the bar off with `"cache-bar": false`; the inner status line still prints.
+const switchesPath = join(configDir, 'mods', 'switches.json')
+
+function isSwitchedOff(): boolean {
+  try {
+    return JSON.parse(readFileSync(switchesPath, 'utf8'))['cache-bar'] === false
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') console.error(`cache-bar: ignoring ${switchesPath}: ${(err as Error).message}`)
+    return false
+  }
+}
 
 function readConfig(): Config {
   let text: string
@@ -38,6 +50,8 @@ if (config.inner) {
   if (inner.error) console.error(`cache-bar: inner command failed: ${inner.error.message}`)
   else if (inner.status !== 0) console.error(`cache-bar: inner command exited ${inner.status}`)
 }
+
+if (isSwitchedOff()) process.exit(0)
 
 let stdin
 try {

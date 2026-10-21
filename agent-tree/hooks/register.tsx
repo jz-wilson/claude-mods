@@ -197,6 +197,24 @@ let isHudHidden = false
 let isHudFailed = false
 let hudQueue: Promise<void> = Promise.resolve()
 
+// The /mods switchboard turns this mod off in every chat: `"agent-tree": false` in
+// ~/.claude/mods/switches.json. Off closes the pane and stops it opening by itself.
+const SWITCH = 'agent-tree'
+let isOff = false
+
+async function readSwitch($: EngineInterface) {
+  let now = false
+  try {
+    const path = `${$.plugin.root.replace(/\\/g, '/').split('/.claude/')[0] ?? ''}/.claude/mods/switches.json`
+    if (await $.fs.exists(path)) now = (JSON.parse(String(await $.fs.read(path))) as Record<string, unknown>)[SWITCH] === false
+  } catch {
+    now = isOff
+  }
+  if (now === isOff) return
+  isOff = now
+  if (isOff && (await isPaneOpen($))) await $.ui.close({ id: PANE })
+}
+
 // Hides and restores run one at a time in the order asked, so a restore never overtakes a hide.
 function syncHud($: EngineInterface, show: boolean) {
   isHudHidden = !show
@@ -226,6 +244,8 @@ export const register: Register = on => {
     // Put claude-hud's agent line back if a session ended without closing the pane; a pane still
     // open after a reload hides it again on its next draw.
     if (!(await isPaneVisible($))) syncHud($, true)
+    await readSwitch($).catch(() => undefined)
+    $.clock.every(3000, () => void readSwitch($).catch(() => undefined))
     // Keeps the elapsed time of running cards ticking between state changes.
     $.clock.every(1000, async () => {
       const [list, root] = [await read($, nodes), await read($, main)]
@@ -239,6 +259,7 @@ export const register: Register = on => {
 
   // The command toggles the pane.
   on('command.run', { command: 'agent-tree' }, async $ => {
+    if (isOff) return { text: 'The agent tree is off. Turn it on with /mods.' }
     if (await isPaneOpen($)) {
       await $.ui.close({ id: PANE })
       return { text: 'Agent tree pane closed.' }
@@ -308,7 +329,7 @@ export const register: Register = on => {
       })),
     )
     // A plain -p run has no surface to open a pane on.
-    if (!(await read($, autoOpened)) && (await $.session.surfaces()).length > 0) {
+    if (!isOff && !(await read($, autoOpened)) && (await $.session.surfaces()).length > 0) {
       await update($, autoOpened, () => true)
       // Not awaited, so a slow surface never holds up the spawn.
       void $.ui

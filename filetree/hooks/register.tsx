@@ -304,6 +304,7 @@ function refreshGit($: EngineInterface): Promise<void> {
 }
 
 async function reset($: EngineInterface, root: string, focus = false): Promise<void> {
+  if (isOff) return
   const prev = await get($)
   generation += 1
   blink?.cancel()
@@ -1136,6 +1137,24 @@ async function pressHeader($: EngineInterface, id: string): Promise<void> {
   else if (id === 'external' && t.preview) await openFile($, t.preview, { mode: '' })
 }
 
+// The /mods switchboard turns this mod off in every chat: `"filetree": false` in
+// ~/.claude/mods/switches.json. Off closes the pane and stops tracking and prompt context.
+const SWITCH = 'filetree'
+let isOff = false
+
+async function readSwitch($: EngineInterface): Promise<void> {
+  let now = false
+  try {
+    const path = `${posix($.plugin.root).split('/.claude/')[0] ?? ''}/.claude/mods/switches.json`
+    if (await $.fs.exists(path)) now = (JSON.parse(String(await $.fs.read(path))) as Record<string, unknown>)[SWITCH] === false
+  } catch {
+    now = isOff
+  }
+  if (now === isOff) return
+  isOff = now
+  if (isOff) await $.ui.close({ id: PANE }).catch(() => undefined)
+}
+
 function shortPath(path: string): string {
   return home && inside(home, path) ? `~${path.slice(home.length)}` : path
 }
@@ -1161,6 +1180,8 @@ export const register: Register = (on, options) => {
     inHerdr = !windows && Boolean(await $.env.get('HERDR_ENV'))
     home = posix(((await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || '').replace(/[\\/]+$/, ''))
     activityId = Math.max(activityId, ...(await activities($)).map(a => a.id))
+    await readSwitch($).catch(() => undefined)
+    $.clock.every(3000, () => void readSwitch($).catch(() => undefined))
     void (async () => {
       pointer = await finePointerOk($)
       try {
@@ -1181,7 +1202,7 @@ export const register: Register = (on, options) => {
       await setActivities($, cur => cur.map(a => (a.state === 'running' ? { ...a, state: 'failed', label: `${a.kind} interrupted` } : a)))
       const cwd = await cwdOf($)
       if (!t.root || t.nodes.length === 0 || (follow && t.root !== cwd)) await reset($, cwd)
-      else if (!noDock) await $.ui.open({ id: PANE, title: `Files: ${t.root.split('/').pop() || t.root}` })
+      else if (!noDock && !isOff) await $.ui.open({ id: PANE, title: `Files: ${t.root.split('/').pop() || t.root}` })
     })()
     return next(e)
   })
@@ -1193,6 +1214,7 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'filetree' }, async ($, e) => {
+    if (isOff) return { text: 'filetree is off. Turn it on with /mods.' }
     // The layout checks are the terminal's: the desktop app docks the pane itself and
     // reports no fullscreen layout, so a session no terminal draws skips them.
     const terminal = await $.session.surfaces().then(s => s.includes('terminal'), () => true)
@@ -1209,6 +1231,7 @@ export const register: Register = (on, options) => {
 
   on('tool.call', async ($, e, next) => {
     const shell = e.tool === 'Bash' || e.tool === 'PowerShell'
+    if (isOff) return next(e)
     if (e.tool !== 'Edit' && e.tool !== 'Write' && e.tool !== 'NotebookEdit' && !shell) return next(e)
     const command = e.tool === 'Bash' || e.tool === 'PowerShell' ? e.command : ''
     const cwd = shell ? await cwdOf($) : ''
@@ -1260,7 +1283,7 @@ export const register: Register = (on, options) => {
 
   on('tool.call', { tool: 'Read' }, async ($, e, next) => {
     const result = await next(e)
-    if (result.deny || result.isError || e.tool !== 'Read') return result
+    if (isOff || result.deny || result.isError || e.tool !== 'Read') return result
     void touched($, [posix(e.file_path)], 'purple', showReads)
     return result
   })
@@ -1268,8 +1291,8 @@ export const register: Register = (on, options) => {
   for (const tool of ['Grep', 'Glob'] as const)
     on('tool.call', { tool }, async ($, e, next) => {
       const result = await next(e)
-      if (result.deny || result.isError) return result
-      const names = (result.result as Partial<BuiltinToolResults['Grep']> | undefined)?.filenames
+      if (isOff || result.deny || result.isError) return result
+      const names =(result.result as Partial<BuiltinToolResults['Grep']> | undefined)?.filenames
       if (!Array.isArray(names) || names.length === 0) return result
       const cwd = await cwdOf($)
       void touched($, names.slice(0, SEARCH_REVEAL_LIMIT).map(f => resolve(cwd, posix(f), home)), 'purple', showReads)
@@ -1366,6 +1389,7 @@ export const register: Register = (on, options) => {
   })
 
   on('prompt.submit', async ($, e, next) => {
+    if (isOff) return next(e)
     void settleBackground($, e.text)
     if (!(await followCwd($))) void sync($)
     const t = await get($)
@@ -1394,6 +1418,7 @@ export const register: Register = (on, options) => {
   })
 
   on('prompt.attachment', async ($, e, next) => {
+    if (isOff) return next(e)
     void settleBackground($, e.text)
     return next(e)
   })
