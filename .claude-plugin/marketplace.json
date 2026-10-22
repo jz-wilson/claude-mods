@@ -3,7 +3,6 @@
   "owner": { "name": "jz-wilson" },
   "description": "Mods for Claude Code",
   "plugins": [
-    { "name": "agent-tree", "source": "./agent-tree" },
     { "name": "brain-dump", "source": "./brain-dump" },
     { "name": "cache-bar", "source": "./cache-bar" },
     { "name": "cache-clock", "source": "./cache-clock" },

@@ -26,6 +26,15 @@ const TAG_W = 11
 const PET_W = 8
 const PET_PX_W = 48
 const PET_PX_H = 36
+// The terminal pet is Clawd as Claude Code draws it on its welcome screen: 9 columns plus a gap, 3 rows.
+const CLAWD_W = 10
+// Frame 0 stands; 1 raises both claws; 2 blinks; 3 looks right and shifts its feet.
+const CLAWD: string[][] = [
+  [' ▐▛███▜▌', '▝▜█████▛▘', '  ▘▘ ▝▝'],
+  ['▗▐▛███▜▌▖', ' ▜█████▛', '  ▘▘ ▝▝'],
+  [' ▐█████▌', '▝▜█████▛▘', '  ▘▘ ▝▝'],
+  [' ▐█▛█▜█▌', '▝▜█████▛▘', '  ▝▘ ▝▘'],
+]
 // A running pet changes frame every second tick: about every 600 ms.
 const FRAME_TICKS = 2
 
@@ -777,15 +786,15 @@ function fitRow(label: string, dim: string, w: number): [string, string] {
   return [label, dim.length > room ? `…${dim.slice(-(room - 1))}` : dim]
 }
 
-/** The terminal bar: one thick row of blocks, full when over, a sliding piece while working. */
+/** The terminal bar: one thin row of eighth-blocks, full when over, a sliding piece while working. */
 function barParts(phase: HelperPhase, w: number, tick: number, seat: number): [string, string, string] {
-  if (phase !== 'working') return ['', '█'.repeat(w), '']
+  if (phase !== 'working') return ['', '▁'.repeat(w), '']
   const piece = Math.max(3, Math.floor(w / 4))
   const span = w + piece
   const head = ((tick + seat * 5 + piece) % span) - piece
   const from = Math.max(0, head)
   const to = Math.min(w, head + piece)
-  return ['░'.repeat(from), '█'.repeat(Math.max(0, to - from)), '░'.repeat(w - Math.max(from, to))]
+  return ['▁'.repeat(from), '▁'.repeat(Math.max(0, to - from)), '▁'.repeat(w - Math.max(from, to))]
 }
 
 // ---------- Sparkle bars: SVG for the desktop subagent cards ----------
@@ -820,10 +829,10 @@ function sparkles(w: number, h: number, size: number, base: number, rise: number
   return out.join('')
 }
 
-const CARD_BAR_H = 10
+const CARD_BAR_H = 3
 
 /**
- * One thick sparkle bar per subagent card. While it works a bright piece sweeps the track
+ * One thin sparkle bar per subagent card. While it works a bright piece sweeps the track
  * (its length is not known); once over the whole bar fills and glows slowly. The drawing
  * depends only on the phase, so CSS moves it and redraws do not restart it.
  */
@@ -1042,8 +1051,9 @@ export const register: Register = on => {
     const { value: view = { open: [], folded: [] } } = await $.state.get(VIEW)
     const { value: cost = { usd: null } } = await $.state.get(COST)
     const width = Math.max(32, e.props.bodyColumns)
-    // Inside a card: its border and padding take 4 columns, the pet PET_W more.
-    const cw = width - 4 - PET_W
+    // Inside a card: its border and padding take 4 columns, the pet petW more.
+    const petW = Svg ? PET_W : CLAWD_W
+    const cw = width - 4 - petW
 
     const running = list.filter(hp => hp.phase === 'working')
     const finished = list.filter(hp => hp.phase === 'done')
@@ -1074,9 +1084,12 @@ export const register: Register = on => {
         )
       }
       return (
-        <Box key={`pet-${hp.id}`} width={PET_W} flexShrink={0} flexDirection="column">
-          <Text color={hue.color}>{frame % 2 ? ' ▜█▛' : ' ▟█▙'}</Text>
-          <Text color={hue.color}>{frame % 2 ? ' ▘ ▝' : '  ▘▝'}</Text>
+        <Box key={`pet-${hp.id}`} width={petW} flexShrink={0} flexDirection="column">
+          {CLAWD[frame]!.map((row, i) => (
+            <Text key={`clawd-${hp.id}-${i}`} color={hue.color}>
+              {row}
+            </Text>
+          ))}
         </Box>
       )
     }
@@ -1114,10 +1127,9 @@ export const register: Register = on => {
           width={width}
           marginBottom={1}
           borderStyle="round"
-          borderColor={live ? hue.color : undefined}
+          borderColor={hp.phase === 'failed' ? BAD : hue.color}
           borderDimColor={!live}
           paddingX={1}
-          paddingY={1}
           gap={0}
         >
           {pet(hp)}
@@ -1136,7 +1148,7 @@ export const register: Register = on => {
               </Text>
               <Text dimColor>{meta}</Text>
             </Box>
-            <Box flexDirection="row" width={cw} marginTop={1}>
+            <Box flexDirection="row" width={cw}>
               {live ? <Text bold color={ACCENT}>{`${spin} `}</Text> : null}
               <Box width={leadW}>
                 <Text bold={live} color={live ? ACCENT : hp.phase === 'done' ? GOOD : BAD} wrap="truncate-end">
@@ -1152,7 +1164,7 @@ export const register: Register = on => {
                 </Text>
               ))}
             {Svg ? (
-              <Box key={`bar-${hp.id}`} width={cw} marginTop={1}>
+              <Box key={`bar-${hp.id}`} width={cw}>
                 <Svg
                   source={cardBarSvg(hp.phase, hue.color, barPx, hp.seat)}
                   alt={live ? 'Working' : hp.phase === 'done' ? 'Done' : 'Stopped'}
@@ -1233,7 +1245,7 @@ export const register: Register = on => {
         {tiles.length ? (
           <Box key="tiles" flexDirection="row" gap={1} width={width} marginBottom={1}>
             {tiles.map(t => (
-              <Box key={`tile-${t.label}`} flexDirection="column" borderStyle="round" paddingX={1} paddingY={1} width={tileW}>
+              <Box key={`tile-${t.label}`} flexDirection="column" borderStyle="round" paddingX={1} width={tileW}>
                 <Text dimColor wrap="truncate-end">
                   {t.label}
                 </Text>

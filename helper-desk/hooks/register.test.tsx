@@ -156,13 +156,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await clock.settle()
     const v = await $.ui.mount({ plugin: 'helper-desk', surface, component: 'Pane', requestId: 'helpers', props: props() })
     if (surface === 'terminal') {
-      const tops = await v.findAll({ type: 'Text', text: /^ (▟█▙|▜█▛)$/ })
+      const tops = await v.findAll({ type: 'Text', text: /^[ ▗]▐[█▛▜]{5}▌▖?$/ })
       expect(tops, 'two glyph pets').toHaveLength(2)
       expect(tops[0]!.props.color !== tops[1]!.props.color, 'pets in different colours').toBe(true)
       expect(await v.findAll({ type: 'Svg' }), 'no Svg on the terminal').toHaveLength(0)
       const before = tops[0]!.text
       await clock.advance(600)
-      const after = (await v.findAll({ type: 'Text', text: /^ (▟█▙|▜█▛)$/ }))[0]!.text
+      const after = (await v.findAll({ type: 'Text', text: /^[ ▗]▐[█▛▜]{5}▌▖?$/ }))[0]!.text
       expect(after !== before, 'a running glyph pet moves').toBe(true)
       return
     }
@@ -207,7 +207,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const v = await $.ui.mount({ plugin: 'helper-desk', surface, component: 'Pane', requestId: 'helpers', props: props() })
     const colours = async () =>
       surface === 'terminal'
-        ? (await v.findAll({ type: 'Text', text: /^ (▟█▙|▜█▛)$/ })).map(t => String(t.props.color))
+        ? (await v.findAll({ type: 'Text', text: /^[ ▗]▐[█▛▜]{5}▌▖?$/ })).map(t => String(t.props.color))
         : (await v.findAll({ type: 'Svg' })).filter(p => String(p.props.alt).startsWith('Claude crab')).map(p => String(p.props.alt).replace('Claude crab, ', ''))
     const got = await colours()
     expect(new Set(got).size, 'two different colours').toBe(2)
@@ -330,7 +330,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect('*/.claude/mods/.open-helper-desk-sess1' in files, 'request file removed').toBe(false)
   })
 
-  test(`each card has one thick sparkle bar (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+  test(`each card has one sparkle bar (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
     const { clock } = rig(on, {})
     await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface, isInteractive: true } as never)
     await $.agent.spawn({ tool_use_id: 's1', prompt: 'x', description: 'Build the landing page', subagentType: 'general-purpose' } as never)
@@ -340,10 +340,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     if (surface === 'desktop') {
       const bars = (await v.findAll({ type: 'Svg' })).filter(b => b.props.alt === 'Working')
       expect(bars, 'one bar for the card').toHaveLength(1)
-      expect(bars[0]!.props.height, 'thick').toBe(10)
+      expect(bars[0]!.props.height, 'thin').toBe(3)
       expect(bars[0]!.props.source, 'sparkles twinkle').toContain('@keyframes tw')
     } else {
-      expect(await v.find({ text: /^[█░]{20,}$/ }), 'one bar of thick blocks').toBeDefined()
+      expect(await v.find({ text: /^▁{20,}$/ }), 'one bar of thin blocks').toBeDefined()
     }
   })
 

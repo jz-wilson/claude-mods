@@ -20,7 +20,8 @@ const GOOD = '#16a34a'
 // hide: has a Shown/Hidden switch. ask: Show also leaves an open request. tip: the slash command.
 type Mod = { name: string; title: string; what: string; pane: boolean; hide: boolean; ask: boolean; tip: string }
 // A row in the pane: a known mod or one found on disk. switchable: its source reads switches.json.
-type Row = Mod & { switchable: boolean; chatOnly: boolean }
+// market: not installed, offered by that marketplace.
+type Row = Mod & { switchable: boolean; chatOnly: boolean; market?: string }
 
 const MODS: readonly Mod[] = [
   { name: 'cache-clock', title: 'Cache Clock', what: 'Counts down until the cache goes cold', pane: false, hide: true, ask: false, tip: '/cacheclock to show or hide' },
@@ -38,6 +39,10 @@ const MODS: readonly Mod[] = [
 let sid = ''
 let lastRaw = ''
 let cache: { at: number; rows: Row[] } | null = null
+// The session's folder, for plugins installed for one project.
+let cwd = ''
+// Installs under way, so a second press does not start another.
+const installing = new Set<string>()
 
 const NOT_SWITCHABLE = 'Not switchable yet. Ask Claude: add the /mods switch to this mod.'
 
@@ -144,17 +149,60 @@ async function listDirs($: EngineInterface, dir: string) {
   }
 }
 
-// Plugins installed from a marketplace: ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>, newest version name last.
-async function cacheDirs($: EngineInterface, home: string) {
-  const out: string[] = []
-  for (const market of await listDirs($, `${home}/.claude/plugins/cache`)) {
-    for (const plugin of await listDirs($, market)) {
-      const versions = (await listDirs($, plugin)).sort()
-      const last = versions[versions.length - 1]
-      if (last) out.push(last)
+const slashes = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '')
+
+// Plugins installed from a marketplace, for this user or this folder: installed_plugins.json, not the
+// cache folder, which keeps a plugin's files after it is uninstalled.
+async function installed($: EngineInterface, home: string) {
+  const json = parse(await readText($, `${home}/.claude/plugins/installed_plugins.json`))
+  const plugins = json.plugins && typeof json.plugins === 'object' ? (json.plugins as Record<string, unknown>) : {}
+  const here = slashes(cwd).toLowerCase()
+  const dirs: string[] = []
+  const names = new Set<string>()
+  for (const [key, list] of Object.entries(plugins)) {
+    if (!Array.isArray(list)) continue
+    for (const x of list as { scope?: unknown; projectPath?: unknown; installPath?: unknown }[]) {
+      const project = typeof x?.projectPath === 'string' ? slashes(x.projectPath).toLowerCase() : ''
+      const mine = x?.scope === 'user' || (!!project && !!here && (here === project || here.startsWith(`${project}/`)))
+      if (!mine || typeof x.installPath !== 'string') continue
+      dirs.push(slashes(x.installPath))
+      names.add(key.split('@')[0] ?? key)
     }
   }
-  return out
+  return { dirs, names }
+}
+
+// Each marketplace's mods, kept until its marketplace.json changes, so a scan reads one file per marketplace.
+const offered = new Map<string, { text: string; rows: Row[] }>()
+
+// Mods a known marketplace offers that are not installed: each listed plugin whose local source folder is a mod.
+async function available($: EngineInterface, home: string, have: Set<string>) {
+  const markets = parse(await readText($, `${home}/.claude/plugins/known_marketplaces.json`))
+  const out: Row[] = []
+  for (const [market, info] of Object.entries(markets)) {
+    const at = (info as { installLocation?: unknown } | null)?.installLocation
+    if (typeof at !== 'string') continue
+    const root = slashes(at)
+    const text = await readText($, `${root}/.claude-plugin/marketplace.json`)
+    let hit = offered.get(market)
+    if (!hit || hit.text !== text) {
+      const rows: Row[] = []
+      const listed = parse(text).plugins
+      for (const p of Array.isArray(listed) ? (listed as { name?: unknown; source?: unknown }[]) : []) {
+        if (typeof p?.name !== 'string' || typeof p.source !== 'string' || !p.source.startsWith('./')) continue
+        const row = await inspect($, `${root}/${slashes(p.source.slice(2))}`, false)
+        if (row) rows.push({ ...row, name: p.name, market })
+      }
+      hit = { text, rows }
+      offered.set(market, hit)
+    }
+    for (const row of hit.rows) {
+      if (have.has(row.name)) continue
+      have.add(row.name)
+      out.push(row)
+    }
+  }
+  return out.sort((a, b) => a.title.localeCompare(b.title))
 }
 
 // CLAUDE_CODE_PLUGIN_DIRS: folders split by ':' (';' on Windows, where ':' is in C:\), '~' meaning the home folder.
@@ -235,14 +283,15 @@ async function inspect($: EngineInterface, dir: string, chatOnly: boolean): Prom
   }
 }
 
-// Known mods first in their old order, then new ones A to Z, then this chat's own.
+// Known mods first in their old order, then new ones A to Z, then this chat's own, then ones not installed.
 async function scan($: EngineInterface): Promise<Row[]> {
   const home = homeOf($)
   const found = new Map<string, Row>()
   const dirs: [string, boolean][] = []
+  const inst = await installed($, home)
   for (const d of await listDirs($, `${home}/.claude/mods`)) dirs.push([d, false])
   for (const d of await envDirs($)) dirs.push([d, false])
-  for (const d of await cacheDirs($, home)) dirs.push([d, false])
+  for (const d of inst.dirs) dirs.push([d, false])
   if (sid) for (const d of await listDirs($, `${home}/.claude/dev-mods/${sid}`)) dirs.push([d, true])
   const seen = new Set<string>()
   for (const [dir, chatOnly] of dirs) {
@@ -252,13 +301,16 @@ async function scan($: EngineInterface): Promise<Row[]> {
     // The same mod from two marketplaces: keep the copy that can be switched.
     if (row && (!found.has(row.name) || (row.switchable && !found.get(row.name)?.switchable))) found.set(row.name, row)
   }
-  const rows: Row[] = MODS.map(m => {
+  // A known mod shows only when it is there: found on disk, or installed (cache-bar has no hooks to find).
+  const rows: Row[] = MODS.flatMap(m => {
     const hit = found.get(m.name)
     found.delete(m.name)
-    return { ...m, switchable: hit ? hit.switchable : true, chatOnly: hit ? hit.chatOnly : false }
+    if (!hit && !inst.names.has(m.name)) return []
+    return [{ ...m, switchable: hit ? hit.switchable : true, chatOnly: hit ? hit.chatOnly : false }]
   })
   const rest = [...found.values()].sort((a, b) => a.title.localeCompare(b.title))
-  return [...rows, ...rest.filter(r => !r.chatOnly), ...rest.filter(r => r.chatOnly)]
+  const have = new Set([...inst.names, ...rows.map(r => r.name), ...rest.map(r => r.name), 'mods'])
+  return [...rows, ...rest.filter(r => !r.chatOnly), ...rest.filter(r => r.chatOnly), ...(await available($, home, have))]
 }
 
 // The scan is kept for 10 seconds, so drawing stays fast.
@@ -270,7 +322,7 @@ async function getRows($: EngineInterface, force = false) {
   return rows
 }
 
-const sigOf = (rows: readonly Row[]) => rows.map(r => `${r.name}|${r.title}|${r.what}|${r.tip}|${r.switchable}|${r.chatOnly}`).join('\n')
+const sigOf = (rows: readonly Row[]) => rows.map(r => `${r.name}|${r.title}|${r.what}|${r.tip}|${r.switchable}|${r.chatOnly}|${r.market ?? ''}`).join('\n')
 
 // While the pane is open, look again every 10 seconds and redraw when the list changed.
 async function scanPoll($: EngineInterface) {
@@ -298,6 +350,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     try {
       sid = await $.session.id()
+      cwd = e.cwd ?? ''
       cache = null
       await $.command.register({ name: 'mods', description: 'Open the Mods pane: turn each mod on or off, or show or hide it, in every chat', immediate: true })
       lastRaw = await readRaw($)
@@ -359,6 +412,27 @@ export const register: Register = on => {
     return { element: e.element }
   })
 
+  // Install: a mod a marketplace offers, installed for this user; it loads on /reload-plugins.
+  on('ui.press', { plugin: 'mods', element: /^install-.+$/ }, async ($, e) => {
+    const name = e.element.slice('install-'.length)
+    const mod = (await getRows($)).find(m => m.name === name && m.market)
+    if (!mod?.market || installing.has(name)) return { element: e.element }
+    installing.add(name)
+    try {
+      await $.state.set(NOTE, `Installing ${mod.title}…`)
+      const { exitCode, stdout, stderr } = await $.process.run(['claude', 'plugin', 'install', `${name}@${mod.market}`], { timeoutMs: 120_000 })
+      if (exitCode !== 0) throw new Error((stderr || stdout).trim() || `exit code ${exitCode}`)
+      await getRows($, true)
+      await $.state.set(NOTE, `${mod.title} is installed. Run /reload-plugins to load it.`)
+    } catch (err) {
+      await log($, `install ${name}`, err)
+      await $.state.set(NOTE, `Could not install ${mod.title}. See ~/.claude/mods-logs/mods.log`)
+    } finally {
+      installing.delete(name)
+    }
+    return { element: e.element }
+  })
+
   // Open: for a side pane that is On and Shown, asks this chat to open it again.
   on('ui.press', { plugin: 'mods', element: /^open-.+$/ }, async ($, e) => {
     const name = e.element.slice('open-'.length)
@@ -398,7 +472,7 @@ export const register: Register = on => {
     const rows = list.map(m => {
       const off = m.switchable && isOff(json, m.name)
       const hidden = isHidden(json, m.name)
-      const width = m.switchable ? left : cols
+      const width = m.switchable || m.market ? left : cols
       const about = (
         <Box flexDirection="column" width={width}>
           <Text bold dimColor={off} wrap="truncate-end">
@@ -419,13 +493,28 @@ export const register: Register = on => {
               This chat only
             </Text>
           ) : null}
-          {m.switchable ? null : (
+          {m.market ? (
+            <Text dimColor italic wrap="truncate-end">
+              {cut(`Not installed · from ${m.market}`, width)}
+            </Text>
+          ) : null}
+          {m.switchable || m.market ? null : (
             <Text dimColor wrap="wrap">
               {NOT_SWITCHABLE}
             </Text>
           )}
         </Box>
       )
+      if (m.market) {
+        return (
+          <Box key={`row-${m.name}`} flexDirection="row" justifyContent="space-between" gap={1} marginTop={1}>
+            {about}
+            <Button key={`install-${m.name}`} onPress={noop}>
+              Install
+            </Button>
+          </Box>
+        )
+      }
       if (!m.switchable) {
         return (
           <Box key={`row-${m.name}`} flexDirection="row" marginTop={1}>

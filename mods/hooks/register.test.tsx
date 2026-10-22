@@ -2,6 +2,16 @@ import { expect, mock, test } from 'claude-code/testing'
 
 const props = { title: 'Mods', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} } as never
 
+// installed_plugins.json: every known mod installed for this user, so each keeps its row.
+const KNOWN = ['cache-clock', 'handoff', 'screen-share', 'brain-dump', 'reflect', 'helper-desk', 'chat-inventory', 'cache-bar']
+const installedJson = (names: string[], extra: Record<string, unknown[]> = {}) =>
+  JSON.stringify({
+    version: 2,
+    plugins: { ...Object.fromEntries(names.map(n => [`${n}@claude-mods`, [{ scope: 'user', installPath: `/nowhere/${n}` }]])), ...extra },
+  })
+const INSTALLED_AT = '/.claude/plugins/installed_plugins.json'
+const INSTALLED = installedJson(KNOWN)
+
 for (const surface of ['desktop', 'terminal'] as const) {
   test(`switches a mod off, and Show opens a side pane (${surface})`, { timeoutMs: 20000 }, async ($, on) => {
     const files: Record<string, string> = {}
@@ -17,9 +27,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
       return { value: { isPlaced: true } } as never
     })
     on('process.run', async () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }) as never)
-    on('fs.exists', async ($, e) => ({ value: (e as { path: string }).path.replace(/\\/g, '/') in files }) as never)
+    on('fs.exists', async ($, e) => {
+      const path = (e as { path: string }).path.replace(/\\/g, '/')
+      return { value: path in files || path.endsWith(INSTALLED_AT) } as never
+    })
     on('fs.read', async ($, e) => {
       const path = (e as { path: string }).path.replace(/\\/g, '/')
+      if (path.endsWith(INSTALLED_AT)) return { value: INSTALLED } as never
       if (!(path in files)) throw new Error(`ENOENT ${path}`)
       return { value: files[path] } as never
     })
@@ -82,9 +96,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
     on('command.register', async () => ({ value: undefined }) as never)
     mock.clock(on, { now: new Date(2026, 9, 15, 21, 0).getTime() })
     on('process.run', async () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }) as never)
-    on('fs.exists', async ($, e) => ({ value: (e as { path: string }).path.replace(/\\/g, '/') in files }) as never)
+    on('fs.exists', async ($, e) => {
+      const path = (e as { path: string }).path.replace(/\\/g, '/')
+      return { value: path in files || path.endsWith(INSTALLED_AT) } as never
+    })
     on('fs.read', async ($, e) => {
       const path = (e as { path: string }).path.replace(/\\/g, '/')
+      if (path.endsWith(INSTALLED_AT)) return { value: INSTALLED } as never
       if (!(path in files)) throw new Error(`ENOENT ${path}`)
       return { value: files[path] } as never
     })
@@ -120,9 +138,13 @@ for (const surface of ['desktop', 'terminal'] as const) {
     on('command.register', async () => ({ value: undefined }) as never)
     mock.clock(on, { now: new Date(2026, 9, 15, 21, 0).getTime() })
     on('process.run', async () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }) as never)
-    on('fs.exists', async ($, e) => ({ value: (e as { path: string }).path.replace(/\\/g, '/') in files }) as never)
+    on('fs.exists', async ($, e) => {
+      const path = (e as { path: string }).path.replace(/\\/g, '/')
+      return { value: path in files || path.endsWith(INSTALLED_AT) } as never
+    })
     on('fs.read', async ($, e) => {
       const path = (e as { path: string }).path.replace(/\\/g, '/')
+      if (path.endsWith(INSTALLED_AT)) return { value: INSTALLED } as never
       if (!(path in files)) throw new Error(`ENOENT ${path}`)
       return { value: files[path] } as never
     })
@@ -182,13 +204,44 @@ const disk: Record<string, string> = {
   '/.claude/dev-mods/sid-123/brand-new/.claude-plugin/plugin.json': JSON.stringify({ name: 'brand-new', description: 'Made in this chat' }),
   '/.claude/dev-mods/sid-123/brand-new/hooks/hooks.json': JSON.stringify({ modules: ['./register.tsx'] }),
   '/.claude/dev-mods/sid-123/brand-new/hooks/register.tsx': "'switches.json'",
+  // Uninstalled, but its files are still in the cache: not listed.
+  '/.claude/plugins/cache/claude-mods/agent-tree/0.1.3/.claude-plugin/plugin.json': JSON.stringify({ name: 'agent-tree' }),
+  '/.claude/plugins/cache/claude-mods/agent-tree/0.1.3/hooks/hooks.json': JSON.stringify({ modules: ['./register.tsx'] }),
+  // reflect is not installed; replay-theater is, for this user; local-only is installed for another folder.
+  [INSTALLED_AT]: installedJson(
+    KNOWN.filter(n => n !== 'reflect'),
+    {
+      'replay-theater@anthropic': [{ scope: 'user', installPath: 'C:\\Users\\t\\.claude\\plugins\\cache\\anthropic\\replay-theater\\0.1.0' }],
+      'local-only@claude-mods': [{ scope: 'project', projectPath: '/Users/test/elsewhere', installPath: '/Users/t/.claude/plugins/cache/claude-mods/local-only/0.1.0' }],
+      // Installed for the folder above the session's: it counts.
+      'here-only@claude-mods': [{ scope: 'project', projectPath: '\\Users\\Test\\', installPath: '/Users/t/.claude/plugins/cache/claude-mods/here-only/0.1.0' }],
+    },
+  ),
+  '/.claude/plugins/cache/claude-mods/here-only/0.1.0/.claude-plugin/plugin.json': JSON.stringify({ name: 'here-only' }),
+  '/.claude/plugins/cache/claude-mods/here-only/0.1.0/hooks/hooks.json': JSON.stringify({ modules: ['./register.tsx'] }),
+  '/.claude/plugins/cache/claude-mods/local-only/0.1.0/.claude-plugin/plugin.json': JSON.stringify({ name: 'local-only' }),
+  '/.claude/plugins/cache/claude-mods/local-only/0.1.0/hooks/hooks.json': JSON.stringify({ modules: ['./register.tsx'] }),
+  // A marketplace offering an installed mod, a mod not installed, a plain plugin and a remote one.
+  '/.claude/plugins/known_marketplaces.json': JSON.stringify({ 'claude-mods': { installLocation: 'C:\\Users\\t\\.claude\\plugins\\marketplaces\\claude-mods' } }),
+  '/.claude/plugins/marketplaces/claude-mods/.claude-plugin/marketplace.json': JSON.stringify({
+    plugins: [
+      { name: 'helper-desk', source: './helper-desk' },
+      { name: 'fresh-mod', source: './fresh-mod' },
+      { name: 'plain-plugin', source: './plain-plugin' },
+      { name: 'remote', source: { source: 'github', repo: 'x/y' } },
+    ],
+  }),
+  '/.claude/plugins/marketplaces/claude-mods/fresh-mod/.claude-plugin/plugin.json': JSON.stringify({ name: 'fresh-mod', description: 'Just published' }),
+  '/.claude/plugins/marketplaces/claude-mods/fresh-mod/hooks/hooks.json': JSON.stringify({ modules: ['./register.tsx'] }),
+  '/.claude/plugins/marketplaces/claude-mods/plain-plugin/.claude-plugin/plugin.json': JSON.stringify({ name: 'plain-plugin' }),
 }
 const dirs: Record<string, string[]> = {
   '/.claude/mods': ['zeta-notes', 'plain-tool', 'not-a-mod', 'mods', 'helper-desk'],
   '/.claude/dev-mods/sid-123': ['brand-new'],
-  '/.claude/plugins/cache': ['anthropic'],
+  '/.claude/plugins/cache': ['anthropic', 'claude-mods'],
   '/.claude/plugins/cache/anthropic': ['replay-theater'],
   '/.claude/plugins/cache/anthropic/replay-theater': ['0.1.0'],
+  '/.claude/plugins/cache/claude-mods': ['agent-tree', 'local-only'],
 }
 const onDisk = (path: string) => Object.keys(disk).find(k => path.endsWith(k))
 
@@ -200,7 +253,11 @@ for (const surface of ['desktop', 'terminal'] as const) {
     on('command.register', async () => ({ value: undefined }) as never)
     mock.clock(on, { now: new Date(2026, 9, 16, 9, 0).getTime() })
     on('ui.open', async () => ({ value: { isPlaced: true } }) as never)
-    on('process.run', async () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }) as never)
+    const runs: string[][] = []
+    on('process.run', async ($, e) => {
+      runs.push([...((e as { argv: readonly string[] }).argv ?? [])])
+      return { value: { exitCode: 0, stdout: '', stderr: '' } } as never
+    })
     on('fs.exists', async ($, e) => {
       const path = (e as { path: string }).path.replace(/\\/g, '/')
       return { value: path in files || onDisk(path) !== undefined } as never
@@ -258,10 +315,21 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await v.find({ key: 'toggle-brain-dump' }), 'Brain-Dump keeps On/Off').toBeDefined()
     expect(await v.find({ key: 'show-zeta-notes' }), 'a new mod has no Shown/Hidden').toBeUndefined()
 
-    // Order: the old table, then new ones A to Z, then this chat's own.
+    // Installed means installed_plugins.json: not the leftover cache, not another folder's project install.
+    expect(await v.find({ text: 'Agent Tree' }), 'uninstalled mod left in the cache').toBeUndefined()
+    expect(await v.find({ text: 'Local Only' }), "another folder's project install").toBeUndefined()
+
+    // Order: the old table (less reflect, not installed), new ones A to Z, this chat's own, then not installed.
     const order = (await v.findAll({ type: 'Box' })).map(b => b.key ?? '').filter(k => k.startsWith('row-')).map(k => k.slice(4))
-    expect(order.slice(0, 8), 'old table first').toEqual(['cache-clock', 'handoff', 'screen-share', 'brain-dump', 'reflect', 'helper-desk', 'chat-inventory', 'cache-bar'])
-    expect(order.slice(8), 'then A to Z, then this chat only').toEqual(['alpha-env', 'plain-tool', 'replay-theater', 'zeta-notes', 'brand-new'])
+    expect(order.slice(0, 7), 'old table first').toEqual(['cache-clock', 'handoff', 'screen-share', 'brain-dump', 'helper-desk', 'chat-inventory', 'cache-bar'])
+    expect(order.slice(7), 'then A to Z, this chat only, then available').toEqual(['alpha-env', 'here-only', 'plain-tool', 'replay-theater', 'zeta-notes', 'brand-new', 'fresh-mod'])
+
+    // A marketplace mod not installed: Install, no switches; pressing it runs the install.
+    expect(await v.find({ text: 'Not installed · from claude-mods' }), 'available label').toBeDefined()
+    expect(await v.find({ key: 'toggle-fresh-mod' }), 'no On/Off before install').toBeUndefined()
+    await v.press({ key: 'install-fresh-mod' })
+    expect(runs, 'claude plugin install').toContainEqual(['claude', 'plugin', 'install', 'fresh-mod@claude-mods'])
+    expect(await v.find({ text: 'Fresh Mod is installed. Run /reload-plugins to load it.' }), 'install note').toBeDefined()
 
     // A found mod switches like a known one.
     await v.press({ key: 'toggle-zeta-notes' })

@@ -4,7 +4,6 @@ Mods for Claude Code.
 
 | Mod | What it does |
 |---|---|
-| [agent-tree](agent-tree) | Live pane showing the subagent spawn tree as cards: who spawned whom, model, status, task, cost, elapsed time and recent tools. Flags Fable running as a worker and subagents idle for 2 minutes. `/agent-tree` toggles the pane. |
 | [cache-bar](cache-bar) | Status-line bar under your existing status line showing how long the prompt cache stays warm, with a handoff countdown: `cache ▰▰▰▱▱▱▱▱ 23m 182k · handoff in 18m`. Turns yellow at a quarter of the TTL, red at the handoff threshold, and follows the drop to a 5-minute TTL. `/cache-bar:setup` installs it. |
 | [filetree](filetree) | Fork of [data-goblin/claude-code-filetree](https://github.com/data-goblin/claude-code-filetree) that shows only the files Claude touched this session; the header's `◆` button toggles to the whole tree. |
 | [brain-dump](brain-dump) | Catches a long, loose prompt before it is sent, asks up to 3 questions on gaps or clashes, then fills the prompt box with a four-part prompt (the job, the why, the guardrails, done means). |
@@ -15,7 +14,7 @@ Mods for Claude Code.
 | [chat-inventory](chat-inventory) | Side pane, In this chat, listing the to-do list, connectors and calls per connector, files and skills this chat used. |
 | [screen-share](screen-share) | `/screen-share` hides names, emails, phone numbers and money amounts on screen while you record. |
 | [replay-theater](replay-theater) | `/replay` steps through the file edits Claude made in the last turn, one diff at a time. |
-| [mods](mods) | `/mods` opens a pane to turn each mod on or off, including mods installed from other marketplaces. |
+| [mods](mods) | `/mods` opens a pane to turn each mod on or off, including mods installed from other marketplaces, and to install mods a marketplace offers that are not installed yet. |
 
 The eight mods other than replay-theater, from brain-dump to mods, come from Ben AI's benai-mods ([benai.co](https://www.benai.co)) and are redistributed with permission, with Windows fixes added here. replay-theater (one Ben AI change: `/mods` switch support) is Anthropic's sample mod from [anthropics/claude-code-playground](https://github.com/anthropics/claude-code-playground/tree/main/claude-code/mods/replay-theater), under the Apache 2.0 license in its `LICENSE`.
 
@@ -28,7 +27,7 @@ Reflect saves a rule either to `~/.claude/CLAUDE.md` (Save everywhere) or as its
 At the prompt of a terminal session:
 
 ```
-/plugin install agent-tree --marketplace jz-wilson/claude-mods
+/plugin install helper-desk --marketplace jz-wilson/claude-mods
 ```
 
 Answer `y` to add the marketplace, then pick a scope.
@@ -36,15 +35,11 @@ Answer `y` to add the marketplace, then pick a scope.
 From a shell:
 
 ```
-claude plugin install agent-tree --marketplace jz-wilson/claude-mods
+claude plugin install helper-desk --marketplace jz-wilson/claude-mods
 claude plugin install cache-bar --marketplace jz-wilson/claude-mods
 ```
 
 In the desktop app, where `/plugin` does not run: click + next to the prompt box, then Plugins, Add marketplace with `jz-wilson/claude-mods`, then Add plugin.
-
-## agent-tree and claude-hud
-
-If [claude-hud](https://github.com/jarrodwatts/claude-hud) is installed, agent-tree turns off its `display.showAgents` while the Agents pane is on screen and restores the earlier value when the pane closes or the session ends.
 
 ## cache-bar and claude-hud
 
