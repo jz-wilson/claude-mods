@@ -1,6 +1,6 @@
 {
   "name": "handoff",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "At 250k tokens or on /refresh <focus>, offers Refresh: writes a handoff of the whole chat with a live-state claims table for /pickup, shows the steps with progress bars, then copies it or starts a new chat with it. Logs every run to ~/.claude/handoffs/handoff.log and saves a draft first",
   "author": {
     "name": "Ben AI",

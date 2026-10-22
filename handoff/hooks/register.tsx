@@ -528,6 +528,18 @@ async function startNew($: EngineInterface) {
   await note($, r.exitCode === 0 ? 'A new chat is filled in with the handoff. Press Return there to start it.' : 'The new chat did not open. Use Copy handoff prompt instead.')
 }
 
+// The terminal holds one chat and no claude:// handler: clear it here and leave /pickup <file> in the prompt.
+async function startHere($: EngineInterface) {
+  if (!handoffPath) return
+  const path = handoffPath
+  await $.command.run({ command: 'clear' })
+  // From here the old chat is gone: whatever fails, say how to continue.
+  const filled = await setPanel($, null)
+    .then(() => $.prompt.fill({ text: `/pickup ${path}` }))
+    .then(r => r.isFilled, () => false)
+  if (!filled) $.ui.toast(`Chat cleared. Run /pickup ${path} to continue.`)
+}
+
 async function checkOffer($: EngineInterface) {
   if (busy || off) return
   // Cache Clock (another mod) asks for a handoff by leaving this file.
@@ -697,7 +709,13 @@ export const register: Register = on => {
     return { element: e.element }
   })
   on('ui.press', { plugin: 'handoff', element: 'start' }, async ($, e) => {
-    void startNew($).catch(() => undefined)
+    void (e.surface === 'terminal' ? startHere($) : startNew($))
+      .catch(async err => {
+        await log($, `start new chat failed: ${String(err)}`)
+        await note($, 'The new chat did not start. Use Copy handoff prompt instead.')
+      })
+      // The session can be gone by then (a clear, a reload); the note is only a hint.
+      .catch(() => undefined)
     return { element: e.element }
   })
   on('ui.press', { plugin: 'handoff', element: 'open' }, async ($, e) => {

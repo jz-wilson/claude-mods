@@ -74,6 +74,16 @@ for (const surface of ['desktop', 'terminal'] as const) {
       const { Text } = $.ui.resolve(e)
       return <Text>REST</Text>
     })
+    const commands: string[] = []
+    on('command.run', async ($, e) => {
+      commands.push((e as { command: string }).command)
+      return { text: '' } as never
+    })
+    const fills: string[] = []
+    on('prompt.fill', async ($, e) => {
+      fills.push((e as { text: string }).text)
+      return { isFilled: true } as never
+    })
 
     const props = { isWorking: false, hasSurvey: false } as never
     await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface, isInteractive: true } as never)
@@ -113,16 +123,27 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
     await v.press({ key: 'start' })
     await clock.advance(2_000)
-    const req = Object.entries(files).find(([k]) => k.includes('/.claude/pet/requests/'))
-    const body = JSON.parse(req?.[1] ?? '{}') as { action?: string; stay?: boolean; folder?: string; text?: string }
-    expect(body.action, 'pet request is a new chat').toBe('newchat')
-    expect(body.stay, 'pet stays on the new chat').toBe(true)
-    expect(body.folder).toBe('/Users/test/vault')
-    expect(body.text ?? '').toContain('# Handoff:')
+    if (surface === 'terminal') {
+      // The terminal clears this chat and leaves /pickup <file> in the prompt.
+      await clock.settle()
+      expect(commands, 'terminal start clears the chat').toEqual(['clear'])
+      expect(fills[0] ?? '', 'the prompt holds /pickup and the saved file').toBe(`/pickup ${saved?.[0]}`)
+      v = await $.ui.mount({ plugin: 'handoff', surface, component: 'AbovePrompt', props })
+      expect(await v.find({ key: 'copy' }), 'the panel closes after the clear').toBeUndefined()
+      await v.unmount()
+    } else {
+      expect(commands, 'desktop start leaves this chat alone').toEqual([])
+      const req = Object.entries(files).find(([k]) => k.includes('/.claude/pet/requests/'))
+      const body = JSON.parse(req?.[1] ?? '{}') as { action?: string; stay?: boolean; folder?: string; text?: string }
+      expect(body.action, 'pet request is a new chat').toBe('newchat')
+      expect(body.stay, 'pet stays on the new chat').toBe(true)
+      expect(body.folder).toBe('/Users/test/vault')
+      expect(body.text ?? '').toContain('# Handoff:')
 
-    await v.press({ key: 'close' })
-    v = await $.ui.mount({ plugin: 'handoff', surface, component: 'AbovePrompt', props })
-    expect(await v.find({ key: 'copy' }), 'closed').toBeUndefined()
+      await v.press({ key: 'close' })
+      v = await $.ui.mount({ plugin: 'handoff', surface, component: 'AbovePrompt', props })
+      expect(await v.find({ key: 'copy' }), 'closed').toBeUndefined()
+    }
   })
 }
 
