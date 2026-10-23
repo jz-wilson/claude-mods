@@ -514,6 +514,13 @@ async function setHidden($: EngineInterface, value: boolean) {
   if (value) await $.ui.close({ id: PANE }).catch(() => undefined)
 }
 
+const GROUPS = ['running', 'finished', 'stopped']
+
+async function hidePane($: EngineInterface) {
+  await setHidden($, true)
+  say($, `${TITLE} hidden. Type /helpers or open /mods to show it.`)
+}
+
 async function openPane($: EngineInterface) {
   await $.ui.open({ id: PANE, title: TITLE })
 }
@@ -921,20 +928,33 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('command.run', { command: 'helpers' }, async $ => {
+  on('command.run', { command: 'helpers' }, async ($, e) => {
     if (off) return { text: `${TITLE} is off. Turn it on with /mods.` }
+    const [verb = '', arg = ''] = String((e as { args?: string }).args ?? '').trim().split(/\s+/)
+    // Each pane button as a subcommand; the press handlers below call the same functions.
+    if (verb === 'hide') {
+      await hidePane($)
+      return { text: `${TITLE} hidden. Type /helpers to show it.` }
+    }
+    if (verb === 'fold') {
+      if (!GROUPS.includes(arg)) return { text: `Usage: /helpers fold ${GROUPS.join('|')}` }
+      await toggleIn($, 'folded', arg)
+      return { text: `Toggled the ${arg} group.` }
+    }
+    if (verb === 'steps') {
+      const { value: list = [] } = await $.state.get(HELPERS)
+      const id = list.find((hp, i) => hp.id === arg || String(i + 1) === arg)?.id
+      if (!id) return { text: 'Usage: /helpers steps <card number or agent id>' }
+      await toggleIn($, 'open', id)
+      return { text: `Toggled the steps of ${id}.` }
+    }
     if (hidden) await setHidden($, false)
     await openPane($)
     return { text: helpers.length ? `${TITLE} opened.` : `${TITLE} opened. Cards show up when Claude starts a subagent.` }
   })
 
   on('ui.press', { plugin: NAME, element: 'hide' }, async ($, e) => {
-    await setHidden($, true)
-    try {
-      $.ui.toast(`${TITLE} hidden. Type /helpers or open /mods to show it.`)
-    } catch {
-      // The toast is only a hint.
-    }
+    await hidePane($)
     return { element: e.element }
   })
 
@@ -1280,6 +1300,11 @@ export const register: Register = on => {
         {group('running', 'Running', running, GOOD, INK)}
         {group('finished', 'Finished', finished, WARN, INK)}
         {group('stopped', 'Stopped', stopped, BAD, INK)}
+        {e.props.isFocused === false ? (
+          <Text key="focus-hint" dimColor wrap="truncate-end">
+            Focus this pane to press its buttons, or use /helpers hide, fold or steps.
+          </Text>
+        ) : null}
       </Box>
     )
   })

@@ -582,6 +582,47 @@ test('the pane and band fit 40, 80 and 144 columns on every surface, with theme 
   }
 })
 
+test('the pane hints at focus only while unfocused, and each button has a /helpers subcommand', { timeoutMs: 30000 }, async ($, on) => {
+  const files: Record<string, string> = {}
+  const { clock, closed } = rig(on, files)
+  await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface: 'terminal', isInteractive: true } as never)
+  await $.agent.spawn({ tool_use_id: 's1', prompt: 'x', description: 'Build the landing page', subagentType: 'general-purpose' } as never)
+  await $.tool.call({ tool: 'Read', tool_use_id: 'c1', file_path: '/Users/test/vault/a.md', agentId: 'agent-a1' } as never)
+  await clock.settle()
+  for (const width of WIDTHS) {
+    for (const [isFocused, shown] of [[false, true], [true, false], [undefined, false]] as const) {
+      const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'Pane', requestId: 'helpers', props: { ...(props(width) as object), isFocused } as never })
+      const hint = await v.find({ type: 'Text', text: /^Focus this pane/ })
+      expect(hint !== undefined, `hint at ${width}, isFocused=${String(isFocused)}`).toBe(shown)
+      if (hint) {
+        expect(hint.props.wrap, 'hint truncates').toBe('truncate-end')
+        expect(hint.props.dimColor, 'hint is dim').toBe(true)
+      }
+      await v.unmount()
+    }
+  }
+  const run = (args: string) => $.command.run({ command: 'helpers', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } } as never)
+  const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'Pane', requestId: 'helpers', props: props(80) })
+  expect(await v.find({ key: 'steps-agent-a1' }), 'toggle drawn').toBeDefined()
+  expect(await v.find({ text: /Step 1 · Reading a\.md/ })).toBeDefined()
+  // steps: same as pressing the card toggle.
+  await run('steps 1')
+  expect((await v.find({ key: 'steps-agent-a1' }))?.text ?? '', 'steps opens the list').toContain('Hide steps')
+  await run('steps agent-a1')
+  expect((await v.find({ key: 'steps-agent-a1' }))?.text ?? '', 'steps by id closes it').toContain('All 1 step')
+  // fold: same as pressing the group arrow.
+  await run('fold running')
+  expect(await v.find({ key: 'card-agent-a1' }), 'fold hides the cards').toBeUndefined()
+  await run('fold running')
+  expect(await v.find({ key: 'card-agent-a1' }), 'fold again shows them').toBeDefined()
+  expect(String(((await run('fold nonsense')) as { text?: string }).text), 'bad group').toContain('Usage')
+  // hide: same as pressing Hide.
+  await run('hide')
+  const sw = Object.keys(files).find(k => k.endsWith('/.claude/mods/switches.json')) ?? ''
+  expect(JSON.parse(files[sw] ?? '{}'), 'hide writes the shared flag').toEqual({ 'helper-desk:hidden': true })
+  expect(closed, 'hide closes the pane').toContain('helpers')
+})
+
 test('the band yields to a survey', { timeoutMs: 30000 }, async ($, on) => {
   const { clock } = rig(on, {})
   await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface: 'terminal', isInteractive: true } as never)
