@@ -27,13 +27,13 @@ const ICON = {
 // Activity tones are theme keys, so they follow the person's theme. The brightest two steps of a
 // shimmer pass through the text color, which stands out on a light and a dark theme alike.
 export const TONES: Record<string, { bright: string[]; dim: string[]; solid: string }> = {
-  orange: { bright: ['claude', 'claude', 'text', 'text'], dim: ['claude', 'claude', 'claude', 'claude'], solid: 'claude' },
-  green: { bright: ['success', 'success', 'text', 'text'], dim: ['success', 'success', 'success', 'success'], solid: 'success' },
-  teal: { bright: ['ide', 'ide', 'text', 'text'], dim: ['ide', 'ide', 'ide', 'ide'], solid: 'ide' },
-  blue: { bright: ['suggestion', 'suggestion', 'text', 'text'], dim: ['suggestion', 'suggestion', 'suggestion', 'suggestion'], solid: 'suggestion' },
-  purple: { bright: ['merged', 'merged', 'text', 'text'], dim: ['merged', 'merged', 'merged', 'merged'], solid: 'merged' },
-  cyan: { bright: ['permission', 'permission', 'text', 'text'], dim: ['permission', 'permission', 'permission', 'permission'], solid: 'permission' },
-  red: { bright: ['error', 'error', 'text', 'text'], dim: ['error', 'error', 'error', 'error'], solid: 'error' },
+  orange: { bright: ['claude', 'claude', 'text', 'text'], dim: ['claude', 'claude', 'subtle', 'subtle'], solid: 'claude' },
+  green: { bright: ['success', 'success', 'text', 'text'], dim: ['success', 'success', 'subtle', 'subtle'], solid: 'success' },
+  teal: { bright: ['ide', 'ide', 'text', 'text'], dim: ['ide', 'ide', 'subtle', 'subtle'], solid: 'ide' },
+  blue: { bright: ['suggestion', 'suggestion', 'text', 'text'], dim: ['suggestion', 'suggestion', 'subtle', 'subtle'], solid: 'suggestion' },
+  purple: { bright: ['merged', 'merged', 'text', 'text'], dim: ['merged', 'merged', 'subtle', 'subtle'], solid: 'merged' },
+  cyan: { bright: ['permission', 'permission', 'text', 'text'], dim: ['permission', 'permission', 'subtle', 'subtle'], solid: 'permission' },
+  red: { bright: ['error', 'error', 'text', 'text'], dim: ['error', 'error', 'subtle', 'subtle'], solid: 'error' },
 }
 
 const GIT_VERBS: Record<string, Omit<GitAction, 'kind'>> = {

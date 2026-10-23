@@ -53,7 +53,7 @@ export function parseTheme(toml: string): Theme {
     accent: get('accent') ?? get('color4') ?? DEFAULT_THEME.accent,
     muted: get('muted') ?? get('color8') ?? DEFAULT_THEME.muted,
     urgent: get('red') ?? get('color1') ?? DEFAULT_THEME.urgent,
-    selection: get('selection') ?? DEFAULT_THEME.selection,
+    selection: get('selection') ?? '#6b7280',
     bg: get('dark_background') ?? get('background') ?? DEFAULT_THEME.bg,
   }
 }

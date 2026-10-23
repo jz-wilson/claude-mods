@@ -1436,7 +1436,7 @@ export const register: Register = (on, options) => {
       const p = previewed
       const markdown = /\.(md|markdown|mdx)$/i.test(t.preview)
       const all = (p?.text ?? '').split('\n').length
-      previewRows = nativeScroll ? all : Math.max(4, (e.props.scroll?.bodyRows ?? 40) - (p?.note ? 3 : 2))
+      previewRows = nativeScroll ? all : Math.max(4, (e.props.scroll?.bodyRows ?? 40) - (p?.note ? 3 : 2) - (e.props.isFocused ? 0 : 1))
       const win = previewLines(p?.text ?? '', nativeScroll ? 0 : Math.min(t.previewTop, Math.max(0, all - previewRows)), previewRows, markdown)
       previewLine = win.top + 1
       const name = t.preview !== t.root && inside(t.root, t.preview) ? relative(t.root, t.preview) : shortPath(t.preview)
@@ -1464,6 +1464,11 @@ export const register: Register = (on, options) => {
             module="./rows.tsx"
             props={{ rows: [], active: '', ...rowColors, pointer: false, preview: { text: win.text, path: t.preview, startLine: win.top + 1, markdown } } satisfies RowsProps}
           />
+          {!e.props.isFocused && (
+            <Text dimColor wrap="truncate-end">
+              click the pane to focus it · /filetree [path] retargets it
+            </Text>
+          )}
         </Box>
       )
     }

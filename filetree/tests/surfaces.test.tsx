@@ -1,6 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import { LINUX_LAUNCH, TMUX_OPEN } from '../hooks/open'
+import { TONES } from '../hooks/git'
 import { age, ancestorsOf, formatSize, replaceChildren, toNodes } from '../hooks/tree'
 
 type World = {
@@ -884,7 +885,7 @@ test('open with preview: End shows the last screen, an edit reloads the file, a 
   await ui.post({ key: 'end' }, { in: 'rows' })
   await clock.settle()
   let shown = JSON.stringify(await ui.drawn())
-  expect(shown).toContain('"startLine":43')
+  expect(shown).toContain('"startLine":44')
   expect(shown).toContain('line 59')
   w.files![`${root}/a.ts`] = 'changed\n'
   await $.tool.call({ tool: 'Edit', file_path: `${root}/a.ts`, old_string: 'a', new_string: 'b' } as any)
@@ -1275,6 +1276,53 @@ test('idle draws nothing on a timer: no repaint is requested over ten quiet minu
   await clock.settle()
   expect(invalidations).toBe(before)
   await ui.unmount()
+})
+
+test('the active row is one band: the gap between the name and the right column is inverse too', { timeoutMs: 20_000, options: { show: 'all' } }, async ($, on) => {
+  const root = '/Users/k/proj'
+  const clock = world(on, { os: 'darwin', env: { HOME: '/Users/k' }, cwd: root, top: root, dirs: { [root]: [['a.ts', 'file'], ['b.ts', 'file']] }, status: '## main\0', numstat: '' }, [])
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await clock.settle()
+  expect(JSON.stringify(await ui.drawn({ in: 'rows' }))).not.toContain('"inverse":true')
+  await ui.post({ press: `${root}/a.ts` }, { in: 'rows' })
+  await clock.settle()
+  const rows = JSON.stringify(await ui.drawn({ in: 'rows' }))
+  expect(rows).toMatch(/"width":0[^}]*\},"children":\[\{"type":"Text","props":\{"inverse":true\},"children":\[" *"\]/)
+  await ui.unmount()
+})
+
+test('dim shimmer palettes step through two theme keys, so dim rows still move', async () => {
+  for (const [name, tone] of Object.entries(TONES)) expect([name, new Set(tone.dim).size]).toEqual([name, 2])
+})
+
+test('an Omarchy theme without a selection color keeps the gray selection', { timeoutMs: 20_000, options: { show: 'all' } }, async ($, on) => {
+  const root = '/home/k/proj'
+  const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: [['a.ts', 'file']] }, status: '', numstat: '', theme: { toml: 'background = "#1e1e2e"\n', mtimeMs: 1 } }, [])
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await clock.settle()
+  expect(await texts(ui)).toContain('"activeBg":"#6b7280","hoverBg":"#3b3d41"')
+  await ui.unmount()
+})
+
+test('the focus hint also shows in the file preview while the pane is not focused', { timeoutMs: 20_000, options: { show: 'all', open: 'preview' } }, async ($, on) => {
+  const root = '/Users/k/proj'
+  const clock = world(on, { os: 'darwin', env: { HOME: '/Users/k' }, cwd: root, top: '', status: '', numstat: '', dirs: { [root]: [['a.ts', 'file']] }, files: { [`${root}/a.ts`]: 'const a = 1\n' } }, [])
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  for (const isFocused of [false, true]) {
+    const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: { ...paneProps(60), isFocused } })
+    await ui.post({ press: `${root}/a.ts` }, { in: 'rows' })
+    await ui.post({ press: `${root}/a.ts` }, { in: 'rows' })
+    await clock.settle()
+    const shown = JSON.stringify(await ui.drawn())
+    expect(shown).toContain('const a = 1')
+    expect(shown.includes('click the pane to focus it')).toBe(!isFocused)
+    await ui.unmount()
+  }
 })
 
 test('formatSize: bytes, binary units, one decimal under 100, ? for unknown', async () => {

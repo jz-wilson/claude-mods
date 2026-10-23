@@ -140,7 +140,9 @@ const Rows: ClientModule<RowsProps, Local> = (props, surface) => {
       <Box flexShrink={1} overflow="hidden">
         {r.left.map(s => draw(s, mark))}
       </Box>
-      <Box flexGrow={1} />
+      <Box flexGrow={1} flexShrink={1} width={0} overflow="hidden">
+        {isActive && !props.activeBg ? <Text inverse>{' '.repeat(surface.columns)}</Text> : null}
+      </Box>
       {r.right.map(s => draw(s, mark))}
       {props.bar && (
         <Text color={i >= props.bar.pos && i < props.bar.pos + props.bar.size ? props.bar.thumb : props.bar.track}>
