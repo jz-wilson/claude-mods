@@ -15,8 +15,6 @@ const POLL_MS = 3000
 const SCAN_MS = 10_000
 const BUTTONS_COLS = 26
 
-const GOOD = '#16a34a'
-
 // hide: has a Shown/Hidden switch. ask: Show also leaves an open request. tip: the slash command.
 type Mod = { name: string; title: string; what: string; pane: boolean; hide: boolean; ask: boolean; tip: string }
 // A row in the pane: a known mod or one found on disk. switchable: its source reads switches.json.
@@ -346,6 +344,82 @@ async function poll($: EngineInterface) {
   $.ui.invalidate('ui.render')
 }
 
+// The four actions behind the buttons. Each leaves its result in NOTE and returns it.
+async function say($: EngineInterface, text: string) {
+  await $.state.set(NOTE, text)
+  return text
+}
+
+async function toggleMod($: EngineInterface, name: string) {
+  const mod = (await getRows($)).find(m => m.name === name && m.switchable)
+  if (!mod) return say($, `No switchable mod named ${name}.`)
+  try {
+    const nowOff = await flip($, name)
+    return await say($, `${mod.title} is ${nowOff ? 'off' : 'on'} in every chat.`)
+  } catch (err) {
+    await log($, `toggle ${name}`, err)
+    return say($, `Could not change ${mod.title}. See ~/.claude/mods-logs/mods.log`)
+  }
+}
+
+async function showMod($: EngineInterface, name: string) {
+  const mod = (await getRows($)).find(m => m.name === name && m.hide && m.switchable)
+  if (!mod) return say($, `${name} has no Shown/Hidden switch.`)
+  try {
+    if (isOff(await readSwitches($), name)) return await say($, `${mod.title} is off. Turn it on first.`)
+    const nowHidden = await flipHidden($, name)
+    if (!nowHidden && mod.ask) await askOpen($, name)
+    return await say($, `${mod.title} is ${nowHidden ? 'hidden' : 'shown'} in every chat.`)
+  } catch (err) {
+    await log($, `show ${name}`, err)
+    return say($, `Could not change ${mod.title}. See ~/.claude/mods-logs/mods.log`)
+  }
+}
+
+// Install: a mod a marketplace offers, installed for this user; it loads on /reload-plugins.
+async function installMod($: EngineInterface, name: string) {
+  const mod = (await getRows($)).find(m => m.name === name && m.market)
+  if (!mod?.market) return say($, `${name} is not offered by a marketplace.`)
+  if (installing.has(name)) return say($, `${mod.title} is already installing.`)
+  installing.add(name)
+  try {
+    await $.state.set(NOTE, `Installing ${mod.title}…`)
+    const { exitCode, stdout, stderr } = await $.process.run(['claude', 'plugin', 'install', `${name}@${mod.market}`], { timeoutMs: 120_000 })
+    if (exitCode !== 0) throw new Error((stderr || stdout).trim() || `exit code ${exitCode}`)
+    await getRows($, true)
+    return await say($, `${mod.title} is installed. Run /reload-plugins to load it.`)
+  } catch (err) {
+    await log($, `install ${name}`, err)
+    return await say($, `Could not install ${mod.title}. See ~/.claude/mods-logs/mods.log`)
+  } finally {
+    installing.delete(name)
+  }
+}
+
+// Open: for a side pane that is On and Shown, asks this chat to open it again.
+async function openMod($: EngineInterface, name: string) {
+  const mod = (await getRows($)).find(m => m.name === name && m.pane && m.switchable)
+  if (!mod) return say($, `${name} has no side pane to open.`)
+  try {
+    const json = await readSwitches($)
+    if (isOff(json, name) || isHidden(json, name)) return await say($, `${mod.title} is ${isOff(json, name) ? 'off' : 'hidden'}. Turn it on and show it first.`)
+    await askOpen($, name)
+    return await say($, `${mod.title} opens in this chat within 3 seconds.`)
+  } catch (err) {
+    await log($, `open ${name}`, err)
+    return say($, `Could not open ${mod.title}. See ~/.claude/mods-logs/mods.log`)
+  }
+}
+
+const VERBS = ['toggle', 'show', 'open', 'install']
+
+async function runVerb($: EngineInterface, verb: string, name: string) {
+  if (verb === 'toggle') return toggleMod($, name)
+  if (verb === 'show') return showMod($, name)
+  if (verb === 'open') return openMod($, name)
+  return installMod($, name)
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     try {
@@ -366,7 +440,12 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('command.run', { command: 'mods' }, async $ => {
+  on('command.run', { command: 'mods' }, async ($, e) => {
+    const [verb = '', name = ''] = e.args.trim().split(/\s+/)
+    if (verb) {
+      if (!VERBS.includes(verb) || !name) return { text: `Usage: /mods, or /mods ${VERBS.join('|')} <mod name>` }
+      return { text: await runVerb($, verb, name) }
+    }
     try {
       await getRows($)
     } catch (err) {
@@ -378,78 +457,24 @@ export const register: Register = on => {
     return { text: 'Opened the Mods pane. Click a button, or Tab to it and press Enter (ctrl+x tab gives the pane the keys); Esc goes back to the prompt.' }
   })
 
-  // Presses come here, not to onPress: a closure lives for one drawing only.
+  // Presses come here, not to onPress: a closure lives for one drawing only. /mods <action> <name> does the same.
   on('ui.press', { plugin: 'mods', element: /^toggle-.+$/ }, async ($, e) => {
-    const name = e.element.slice('toggle-'.length)
-    const mod = (await getRows($)).find(m => m.name === name && m.switchable)
-    if (!mod) return { element: e.element }
-    try {
-      const nowOff = await flip($, name)
-      await $.state.set(NOTE, `${mod.title} is ${nowOff ? 'off' : 'on'} in every chat.`)
-    } catch (err) {
-      await log($, `toggle ${name}`, err)
-      await $.state.set(NOTE, `Could not change ${mod.title}. See ~/.claude/mods-logs/mods.log`)
-    }
+    await toggleMod($, e.element.slice('toggle-'.length))
     return { element: e.element }
   })
 
   on('ui.press', { plugin: 'mods', element: /^show-.+$/ }, async ($, e) => {
-    const name = e.element.slice('show-'.length)
-    const mod = (await getRows($)).find(m => m.name === name && m.hide && m.switchable)
-    if (!mod) return { element: e.element }
-    try {
-      if (isOff(await readSwitches($), name)) {
-        await $.state.set(NOTE, `${mod.title} is off. Turn it on first.`)
-        return { element: e.element }
-      }
-      const nowHidden = await flipHidden($, name)
-      if (!nowHidden && mod.ask) await askOpen($, name)
-      await $.state.set(NOTE, `${mod.title} is ${nowHidden ? 'hidden' : 'shown'} in every chat.`)
-    } catch (err) {
-      await log($, `show ${name}`, err)
-      await $.state.set(NOTE, `Could not change ${mod.title}. See ~/.claude/mods-logs/mods.log`)
-    }
+    await showMod($, e.element.slice('show-'.length))
     return { element: e.element }
   })
 
-  // Install: a mod a marketplace offers, installed for this user; it loads on /reload-plugins.
   on('ui.press', { plugin: 'mods', element: /^install-.+$/ }, async ($, e) => {
-    const name = e.element.slice('install-'.length)
-    const mod = (await getRows($)).find(m => m.name === name && m.market)
-    if (!mod?.market || installing.has(name)) return { element: e.element }
-    installing.add(name)
-    try {
-      await $.state.set(NOTE, `Installing ${mod.title}…`)
-      const { exitCode, stdout, stderr } = await $.process.run(['claude', 'plugin', 'install', `${name}@${mod.market}`], { timeoutMs: 120_000 })
-      if (exitCode !== 0) throw new Error((stderr || stdout).trim() || `exit code ${exitCode}`)
-      await getRows($, true)
-      await $.state.set(NOTE, `${mod.title} is installed. Run /reload-plugins to load it.`)
-    } catch (err) {
-      await log($, `install ${name}`, err)
-      await $.state.set(NOTE, `Could not install ${mod.title}. See ~/.claude/mods-logs/mods.log`)
-    } finally {
-      installing.delete(name)
-    }
+    await installMod($, e.element.slice('install-'.length))
     return { element: e.element }
   })
 
-  // Open: for a side pane that is On and Shown, asks this chat to open it again.
   on('ui.press', { plugin: 'mods', element: /^open-.+$/ }, async ($, e) => {
-    const name = e.element.slice('open-'.length)
-    const mod = (await getRows($)).find(m => m.name === name && m.pane && m.switchable)
-    if (!mod) return { element: e.element }
-    try {
-      const json = await readSwitches($)
-      if (isOff(json, name) || isHidden(json, name)) {
-        await $.state.set(NOTE, `${mod.title} is ${isOff(json, name) ? 'off' : 'hidden'}. Turn it on and show it first.`)
-        return { element: e.element }
-      }
-      await askOpen($, name)
-      await $.state.set(NOTE, `${mod.title} opens in this chat within 3 seconds.`)
-    } catch (err) {
-      await log($, `open ${name}`, err)
-      await $.state.set(NOTE, `Could not open ${mod.title}. See ~/.claude/mods-logs/mods.log`)
-    }
+    await openMod($, e.element.slice('open-'.length))
     return { element: e.element }
   })
 
@@ -475,7 +500,7 @@ export const register: Register = on => {
       const width = m.switchable || m.market ? left : cols
       const about = (
         <Box flexDirection="column" width={width}>
-          <Text bold dimColor={off} wrap="truncate-end">
+          <Text weight="bold" dimColor={off} wrap="truncate-end">
             {cut(m.title, width)}
           </Text>
           {m.what ? (
@@ -540,12 +565,12 @@ export const register: Register = on => {
                 <Text dimColor>{hidden ? 'Hidden' : 'Shown'}</Text>
               ) : (
                 <Button key={`show-${m.name}`} onPress={noop}>
-                  {hidden ? <Text dimColor>Hidden</Text> : <Text color={GOOD}>Shown</Text>}
+                  {hidden ? <Text dimColor>Hidden</Text> : <Text color="success">Shown</Text>}
                 </Button>
               )
             ) : null}
             <Button key={`toggle-${m.name}`} onPress={noop}>
-              {off ? <Text dimColor>Off</Text> : <Text color={GOOD}>On</Text>}
+              {off ? <Text dimColor>Off</Text> : <Text color="success">On</Text>}
             </Button>
           </Box>
         </Box>
@@ -557,7 +582,7 @@ export const register: Register = on => {
         {rows}
         <Box marginTop={1} flexDirection="column">
           {note ? (
-            <Text color={GOOD} wrap="truncate-end">
+            <Text color="success" wrap="truncate-end">
               {cut(note, cols)}
             </Text>
           ) : null}
@@ -567,6 +592,11 @@ export const register: Register = on => {
           <Text dimColor wrap="wrap">
             New mods appear here by themselves.
           </Text>
+          {!e.props.isFocused && (
+            <Text dimColor wrap="truncate-end">
+              {cut('ctrl+x tab or click to focus · /mods toggle|show|open|install <name>', cols)}
+            </Text>
+          )}
         </Box>
       </Box>
     )

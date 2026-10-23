@@ -1,4 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
+import type { FoundElement } from 'claude-code/testing'
+import type { ThemeKey } from 'claude-code'
 
 const props = { title: 'Mods', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} } as never
 
@@ -336,5 +338,91 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const sw = Object.keys(files).find(k => k.endsWith('/.claude/mods/switches.json')) ?? ''
     expect(JSON.parse(files[sw] ?? '{}'), 'zeta-notes off').toEqual({ 'zeta-notes': false })
     expect(await v.find({ text: 'Zeta Notes is off in every chat.' }), 'note').toBeDefined()
+  })
+}
+
+const THEME_KEYS: readonly ThemeKey[] = [
+  'text', 'inverseText', 'inactive', 'subtle', 'suggestion', 'remember', 'success', 'error',
+  'warning', 'merged', 'claude', 'permission', 'planMode', 'autoAccept', 'promptBorder',
+  'bashBorder', 'ide', 'diffAdded', 'diffRemoved', 'diffAddedDimmed', 'diffRemovedDimmed',
+  'diffAddedWord', 'diffRemovedWord',
+]
+const COLOR_PROPS = ['color', 'borderColor', 'backgroundColor']
+
+// Functional color must be a theme key. The kit hides `hover`, so hover colors are checked by eye.
+function rawColors(elements: FoundElement[]): string[] {
+  return elements.flatMap(element =>
+    COLOR_PROPS.map(prop => [prop, element.props[prop]] as const)
+      .filter(([, value]) => value !== undefined && !THEME_KEYS.includes(value as ThemeKey))
+      .map(([prop, value]) => `${element.type}.${prop}=${String(value)}`),
+  )
+}
+
+// A machine with every known mod installed and one switches.json, for the pane tests below.
+function machine($: Parameters<Parameters<typeof test>[2]>[0], on: Parameters<Parameters<typeof test>[2]>[1]) {
+  const files: Record<string, string> = {}
+  on('session.start', async ($, e) => ({ cwd: e.cwd }) as never)
+  on('session.id', async () => ({ value: 'sid-123' }) as never)
+  on('command.register', async () => ({ value: undefined }) as never)
+  mock.clock(on, { now: new Date(2026, 9, 15, 21, 0).getTime() })
+  on('ui.open', async () => ({ value: { isPlaced: true } }) as never)
+  on('process.run', async () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }) as never)
+  on('fs.exists', async ($, e) => {
+    const path = (e as { path: string }).path.replace(/\\/g, '/')
+    return { value: path in files || path.endsWith(INSTALLED_AT) } as never
+  })
+  on('fs.read', async ($, e) => {
+    const path = (e as { path: string }).path.replace(/\\/g, '/')
+    if (path.endsWith(INSTALLED_AT)) return { value: INSTALLED } as never
+    if (!(path in files)) throw new Error(`ENOENT ${path}`)
+    return { value: files[path] } as never
+  })
+  on('fs.write', async ($, e) => {
+    const { path, text } = e as { path: string; text: string }
+    files[path.replace(/\\/g, '/')] = text
+    return { value: undefined } as never
+  })
+  on('fs.list', async () => ({ value: [] }) as never)
+  mock.env(on, {})
+  return files
+}
+
+for (const surface of ['desktop', 'terminal'] as const) {
+  test(`the pane fits 40, 80 and 144 columns with theme colors only (${surface})`, { timeoutMs: 20000 }, async ($, on) => {
+    machine($, on)
+    await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface, isInteractive: true } as never)
+    for (const bodyColumns of [40, 80, 144]) {
+      const v = await $.ui.mount({ plugin: 'mods', surface, component: 'Pane', requestId: 'mods', props: { ...(props as object), bodyColumns } as never })
+      expect(rawColors(await v.findAll({})), `no raw color at ${bodyColumns}`).toEqual([])
+      // Each switchable row leaves its buttons room: title column plus buttons never exceed the body.
+      const widths = (await v.findAll({ type: 'Box' })).map(b => Number(b.props.width)).filter(w => Number.isFinite(w) && w > 0)
+      expect(Math.max(...widths), `nothing wider than ${bodyColumns}`).toBeLessThanOrEqual(bodyColumns)
+      for (const w of widths) expect(w + 26 <= bodyColumns || w === bodyColumns, `row title ${w} leaves 26 for buttons at ${bodyColumns}`).toBe(true)
+      await v.unmount()
+    }
+  })
+
+  test(`the pane shows a focus hint only while unfocused, and every button has a slash twin (${surface})`, { timeoutMs: 20000 }, async ($, on) => {
+    const files = machine($, on)
+    await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface, isInteractive: true } as never)
+    const hint = { text: /ctrl\+x tab or click to focus/ } as const
+    const idle = await $.ui.mount({ plugin: 'mods', surface, component: 'Pane', requestId: 'mods', props })
+    expect(await idle.find(hint), 'hint while unfocused').toBeDefined()
+    await idle.unmount()
+    const focused = await $.ui.mount({ plugin: 'mods', surface, component: 'Pane', requestId: 'mods', props: { ...(props as object), isFocused: true } as never })
+    expect(await focused.find(hint), 'no hint while focused').toBeUndefined()
+    await focused.unmount()
+
+    const run = async (args: string) => JSON.stringify(await $.command.run({ command: 'mods', args } as never))
+    const sw = () => JSON.parse(files[Object.keys(files).find(k => k.endsWith('/.claude/mods/switches.json')) ?? ''] ?? '{}')
+    expect(await run('toggle cache-clock'), 'toggle says so').toContain('Cache Clock is off in every chat.')
+    expect(sw(), 'toggle wrote the file').toEqual({ 'cache-clock': false })
+    expect(await run('toggle cache-bar'), 'cache-bar is switchable').toContain('Cache Bar is off')
+    expect(await run('show helper-desk'), 'show hides').toContain('Helper Desk is hidden')
+    expect(await run('show helper-desk'), 'show shows').toContain('Helper Desk is shown')
+    expect(Object.keys(files).some(k => k.endsWith('/.claude/mods/.open-helper-desk-sid-123')), 'show leaves the open request').toBe(true)
+    expect(await run('open chat-inventory'), 'open asks the pane').toContain('Chat Inventory opens in this chat')
+    expect(await run('toggle nonsense'), 'unknown name is said, not thrown').toContain('No switchable mod named nonsense')
+    expect(await run('bogus x'), 'unknown verb gives usage').toContain('Usage: /mods')
   })
 }
