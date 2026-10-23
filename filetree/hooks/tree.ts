@@ -7,20 +7,11 @@ export type Row = { node: FileNode; depth: number; open: boolean }
 const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
 
 export const DEFAULT_THEME: Theme = {
-  fg: '',
-  accent: '#5b9bd5',
-  muted: '#808a96',
-  urgent: '#d0605e',
-  selection: '#6b7280',
-  bg: '',
-}
-
-export const LIGHT_THEME: Theme = {
-  fg: '',
-  accent: '#1e3a8a',
-  muted: '#374151',
-  urgent: '#7f1d1d',
-  selection: '#e2e6ec',
+  fg: 'text',
+  accent: 'suggestion',
+  muted: 'subtle',
+  urgent: 'error',
+  selection: '',
   bg: '',
 }
 

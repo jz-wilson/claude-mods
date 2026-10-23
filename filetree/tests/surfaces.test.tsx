@@ -1221,45 +1221,59 @@ test('without an Omarchy theme the pane keeps the terminal background and nothin
   await ui.unmount()
 })
 
-test('a light theme setting draws every color at AAA contrast in the terminal, and the desktop app and a dark theme keep the dark palette', { timeoutMs: 20_000, options: { show: 'all' } }, async ($, on) => {
-  const ran: Ran = []
+const RAW_COLOR = /#[0-9a-fA-F]{3,8}\b|rgb\(|"(?:color|backgroundColor|c|bg|activeBg|hoverBg|thumb|track)":"(?:red|green|blue|yellow|cyan|magenta|white|black|gray|grey|orange)"/
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  for (const columns of [40, 80, 144]) {
+    test(`${surface} at ${columns} columns: every color is a theme key and the single lines truncate`, { timeoutMs: 20_000, options: { show: 'all' } }, async ($, on) => {
+      const root = '/Users/k/proj'
+      const clock = world(on, {
+        os: 'darwin', env: { HOME: '/Users/k' }, cwd: root, top: root,
+        dirs: { [root]: [['a.ts', 'file'], ['b.ts', 'file'], ['src', 'dir']] },
+        status: '## main...origin/main [ahead 1, behind 2]\0 M a.ts\0?? b.ts\0 D src/c.ts\0', numstat: '3\t1\ta.ts\0',
+      }, [])
+      await $.session.start({ cwd: root, surface, isInteractive: true })
+      await clock.settle()
+      const ui = await $.ui.mount({ plugin: 'filetree', surface, component: 'Pane', requestId: 'filetree', props: paneProps(columns) })
+      await clock.settle()
+      const shown = await texts(ui)
+      expect(shown).toContain('"activeBg":""')
+      expect(shown).not.toMatch(RAW_COLOR)
+      const drawn = JSON.stringify(await ui.drawn())
+      expect(drawn).toContain('click the pane to focus it')
+      expect(drawn).toContain('"wrap":"truncate-end"')
+      await ui.unmount()
+    })
+  }
+}
+
+test('the focus hint shows only while the pane is not focused', { timeoutMs: 20_000, options: { show: 'all' } }, async ($, on) => {
   const root = '/Users/k/proj'
-  const clock = world(on, {
-    os: 'darwin', env: { HOME: '/Users/k' }, cwd: root, top: root,
-    dirs: { [root]: [['a.ts', 'file'], ['b.ts', 'file']] },
-    status: '## main\0 M a.ts\0?? b.ts\0', numstat: '3\t1\ta.ts\0',
-  }, ran)
-  let theme = 'light-daltonized'
-  on('config.list', () => ({ value: [{ key: 'theme', label: 'Theme', kind: 'choice', value: theme, provider: { plugin: 'engine', tier: 'core' }, isLocked: false }] as any }))
-  on('config.set', (_$: any, e: any) => {
-    theme = e.value
-    return { value: e.value }
+  const clock = world(on, { os: 'darwin', env: { HOME: '/Users/k' }, cwd: root, top: root, dirs: { [root]: [['a.ts', 'file']] }, status: '## main\0', numstat: '' }, [])
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const focused = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: { ...paneProps(80), isFocused: true } })
+  await clock.settle()
+  expect(JSON.stringify(await focused.drawn())).not.toContain('click the pane to focus it')
+  await focused.unmount()
+})
+
+test('idle draws nothing on a timer: no repaint is requested over ten quiet minutes', { timeoutMs: 20_000, options: { show: 'all' } }, async ($, on) => {
+  const root = '/Users/k/proj'
+  const clock = world(on, { os: 'darwin', env: { HOME: '/Users/k' }, cwd: root, top: root, dirs: { [root]: [['a.ts', 'file']] }, status: '## main\0', numstat: '' }, [])
+  let invalidations = 0
+  on('ui.invalidate', () => {
+    invalidations++
+    return { value: undefined }
   })
   await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
   await clock.settle()
-  let ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(80) })
   await clock.settle()
-  const light = await texts(ui)
-  expect(light).toContain('"activeBg":"#e2e6ec","hoverBg":"#f0f2f5"')
-  for (const c of ['#1e3a8a', '#78350f', '#14532d', '#374151']) expect(light).toContain(`"color":"${c}"`)
-  expect(light).toContain('#431407')
-  expect(light).not.toContain('"color":"#5b9bd5"')
-  await ui.unmount()
-  const desktop = await $.ui.mount({ plugin: 'filetree', surface: 'desktop', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  const before = invalidations
+  await clock.advance(600_000)
   await clock.settle()
-  const onDesktop = await texts(desktop)
-  expect(onDesktop).toContain('"activeBg":"#6b7280","hoverBg":"#3b3d41"')
-  expect(onDesktop).not.toContain('"color":"#1e3a8a"')
-  await desktop.unmount()
-  ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
-  await clock.settle()
-  expect(await texts(ui)).toContain('"color":"#1e3a8a"')
-  await $.config.set({ key: 'theme', value: 'dark' } as any)
-  await clock.settle()
-  const dark = await texts(ui)
-  expect(dark).toContain('"activeBg":"#6b7280","hoverBg":"#3b3d41"')
-  for (const c of ['#5b9bd5', '#e5c07b', '#98c379', '#808a96']) expect(dark).toContain(`"color":"${c}"`)
-  expect(dark).not.toContain('"color":"#1e3a8a"')
+  expect(invalidations).toBe(before)
   await ui.unmount()
 })
 
@@ -1424,7 +1438,7 @@ for (const hints of ['on', 'off'] as const) {
     await clock.settle()
     const drawn = (await ui.drawn()) as any
     expect(JSON.stringify(drawn).includes('git init')).toBe(hints === 'on')
-    expect(drawn.children.find((c: any) => c.type === 'Client').props.props.rows.length).toBe(hints === 'on' ? 16 : 17)
+    expect(drawn.children.find((c: any) => c.type === 'Client').props.props.rows.length).toBe(hints === 'on' ? 15 : 16)
     await ui.unmount()
   })
 }

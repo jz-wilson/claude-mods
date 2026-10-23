@@ -23,7 +23,7 @@ const FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '
 function shimmer(i: number, phase: number, len: number, palette: string[]): string {
   const band = ((phase * 1.6) % (len + 8)) - 4
   const d = Math.abs(i - band)
-  return palette[d < 0.8 ? 3 : d < 1.8 ? 2 : d < 2.8 ? 1 : 0] ?? palette[0] ?? '#f97316'
+  return palette[d < 0.8 ? 3 : d < 1.8 ? 2 : d < 2.8 ? 1 : 0] ?? palette[0] ?? 'claude'
 }
 
 const Rows: ClientModule<RowsProps, Local> = (props, surface) => {
@@ -92,10 +92,12 @@ const Rows: ClientModule<RowsProps, Local> = (props, surface) => {
     return p.markdown ? <Markdown text={p.text} /> : <Code source={p.text} path={p.path} startLine={p.startLine} wrap="truncate-end" />
   }
   const frames = props.spinner?.length ? props.spinner : FRAMES
-  const draw = (s: Seg) => {
+  // With no theme file there is no selection color to paint: the active row reads inverse and the
+  // hovered one underlined, both in whatever colors the person's theme gives the text.
+  const draw = (s: Seg, mark: { inverse?: boolean; underline?: boolean }) => {
     if (s.spin) {
       return (
-        <Text color={s.c} bold={s.b}>
+        <Text color={s.c} weight={s.b ? 'bold' : undefined} {...mark}>
           {s.t + (frames[state.phase % frames.length] ?? '')}
         </Text>
       )
@@ -103,46 +105,51 @@ const Rows: ClientModule<RowsProps, Local> = (props, surface) => {
     const palette = s.sh ? (s.dim ? props.tones[s.sh]?.dim : props.tones[s.sh]?.bright) : undefined
     if (!palette) {
       return (
-        <Text color={s.c} backgroundColor={s.bg} bold={s.b} strikethrough={s.s} italic={s.i}>
+        <Text color={s.c} backgroundColor={s.bg} weight={s.b ? 'bold' : undefined} strikethrough={s.s} italic={s.i} {...mark}>
           {s.t}
         </Text>
       )
     }
     if (s.one) {
       return (
-        <Text color={shimmer(-1, state.phase, s.t.length, palette)}>
+        <Text color={shimmer(-1, state.phase, s.t.length, palette)} dimColor={s.dim} {...mark}>
           {s.t}
         </Text>
       )
     }
     const chars = [...s.t]
     return (
-      <Text bold={s.b}>
+      <Text weight={s.b ? 'bold' : undefined} dimColor={s.dim} {...mark}>
         {chars.map((ch, i) => (
           <Text color={shimmer(i, state.phase, chars.length, palette)}>{ch}</Text>
         ))}
       </Text>
     )
   }
-  const rowEl = (r: RowSpec, i: number) => (
+  const rowEl = (r: RowSpec, i: number) => {
+    const isActive = Boolean(r.id) && r.id === props.active
+    const isHover = !isActive && Boolean(r.id) && i === state.hover
+    const mark = isActive && !props.activeBg ? { inverse: true } : isHover && !props.hoverBg ? { underline: true } : {}
+    return (
     <Box
       flexDirection="row"
       height={1}
       overflow="hidden"
-      backgroundColor={r.id && r.id === props.active ? props.activeBg : r.id && i === state.hover ? props.hoverBg : undefined}
+      backgroundColor={isActive ? props.activeBg || undefined : isHover ? props.hoverBg || undefined : undefined}
     >
       <Box flexShrink={1} overflow="hidden">
-        {r.left.map(draw)}
+        {r.left.map(s => draw(s, mark))}
       </Box>
       <Box flexGrow={1} />
-      {r.right.map(draw)}
+      {r.right.map(s => draw(s, mark))}
       {props.bar && (
         <Text color={i >= props.bar.pos && i < props.bar.pos + props.bar.size ? props.bar.thumb : props.bar.track}>
           {i >= props.bar.pos && i < props.bar.pos + props.bar.size ? '┃' : '│'}
         </Text>
       )}
     </Box>
-  )
+    )
+  }
   const drawn: RenderElement[] = []
   let size = 0
   for (let i = 0; i < props.rows.length; i++) {
@@ -153,7 +160,7 @@ const Rows: ClientModule<RowsProps, Local> = (props, surface) => {
     } catch {}
     if (size + cost > TREE_BUDGET || drawn.length >= MAX_ROWS) {
       visible = i
-      drawn.push(<Text dimColor>{`  … ${props.rows.length - i} more rows, collapse folders or use search`}</Text>)
+      drawn.push(<Text dimColor wrap="truncate-end">{`  … ${props.rows.length - i} more rows, collapse folders or use search`}</Text>)
       break
     }
     size += cost
