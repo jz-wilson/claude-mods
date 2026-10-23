@@ -12,6 +12,9 @@ const DEMO_MS = 60_000
 const BIG = 150_000
 const BAR = 20
 
+// The progress bar is the first thing to go when the band is narrow; the countdown and buttons stay.
+export const barColumns = (bodyColumns: number) => (bodyColumns >= 100 ? BAR : bodyColumns >= 60 ? 10 : 0)
+
 // Keep warm: one small background ping about 45 s before the cache would go cold.
 // $.model.fork repeats the main thread's last request (same model, system prompt,
 // tools, messages) with this one line after it, so the API reads the chat from its
@@ -25,11 +28,6 @@ const PING_PROMPT = 'Reply with the single word: ok'
 const TIP = 'Each ping reads the chat from cache for a small part of the price (5 to 10%). Letting it go cold means writing it all again.'
 // Turns that are not the person typing: they do not count as "they are back".
 const BACKGROUND = new Set(['task-notification', 'scheduled-trigger', 'peer', 'peer-send-message', 'projects-relay', 'channel', 'coordinator', 'observer', 'observer-activity', 'auto-continuation'])
-
-const GOOD = '#16a34a'
-const WARN = '#ca8a04'
-const BAD = '#dc2626'
-const COLD = '#2563eb'
 
 // Module variables reset on a reload; the clock itself lives in $.state.
 let sid = ''
@@ -277,7 +275,8 @@ async function restart($: EngineInterface) {
 // Once a second: moves the countdown while the band shows.
 async function tick($: EngineInterface) {
   const c = await getClock($)
-  if (!c || off || hidden || !c.lastEnd) return
+  // While a turn runs the band is not drawn, so there is nothing to count.
+  if (!c || off || hidden || working || !c.lastEnd) return
   const now = await $.clock.now()
   // A cold clock only needs a redraw once a minute, for its "went cold" line.
   const cold = now - c.lastEnd >= c.ttlMs
@@ -414,28 +413,29 @@ export const register: Register = on => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const noop = () => undefined
     const left = c.lastEnd + c.ttlMs - c.now
+    const bar = barColumns(e.props.bodyColumns)
     const cost = `${short(c.tokens)} tokens`
     const w = await getWarm($)
     const warmButton = w ? <Button key="keepwarm" label="Stop keeping warm" onPress={noop} /> : <Button key="keepwarm" label="Keep warm" onPress={noop} />
-    const warmRow = w ? <Text color={w.cold || w.error ? BAD : COLD}>{warmLine(w, left)}</Text> : null
+    const warmRow = w ? <Text color={w.cold || w.error ? 'error' : 'suggestion'} wrap="truncate-end">{warmLine(w, left)}</Text> : null
     const tip = <Text dimColor>{TIP}</Text>
 
     if (left > 0) {
       const share = left / c.ttlMs
-      const filled = Math.max(1, Math.round(share * BAR))
-      const color = left <= 60_000 ? BAD : share < 0.5 ? WARN : GOOD
+      const filled = Math.max(1, Math.round(share * bar))
+      const color = left <= 60_000 ? 'error' : share < 0.5 ? 'warning' : 'success'
       return (
         <Box flexDirection="column">
           {rest}
           <Box flexDirection="row" alignItems="center" justifyContent="space-between" gap={1}>
-            <Text>
+            <Text wrap="truncate-end">
               <Text color={color}>◷ Cache warm </Text>
-              <Text bold color={color}>
+              <Text weight="bold" color={color}>
                 {mmss(left)}
               </Text>
               <Text> </Text>
-              <Text color={color}>{'━'.repeat(filled)}</Text>
-              <Text dimColor>{'━'.repeat(BAR - filled)}</Text>
+              {bar > 0 ? <Text color={color}>{'━'.repeat(filled)}</Text> : null}
+              {bar > 0 ? <Text dimColor>{'━'.repeat(bar - filled)}</Text> : null}
               <Text dimColor>{` ${lengthLabel(c)}.`}</Text>
               <Text dimColor> Reply now and {cost} cost 5 to 10% as much.</Text>
             </Text>
@@ -456,8 +456,8 @@ export const register: Register = on => {
       <Box flexDirection="column">
         {rest}
         <Box flexDirection="row" alignItems="center" justifyContent="space-between" gap={1}>
-          <Text>
-            <Text color={COLD}>❄ Cache cold</Text>
+          <Text wrap="truncate-end">
+            <Text color="suggestion">❄ Cache cold</Text>
             <Text dimColor> since {ago(-left)}. Your next message re-reads {cost} at full cost.</Text>
           </Text>
           <Box flexDirection="row" gap={1}>

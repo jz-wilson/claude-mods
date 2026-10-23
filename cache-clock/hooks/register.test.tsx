@@ -1,4 +1,25 @@
 import { expect, mock, test } from 'claude-code/testing'
+import type { FoundElement } from 'claude-code/testing'
+import type { ThemeKey } from 'claude-code'
+
+import { barColumns } from './register'
+
+const THEME_KEYS: readonly ThemeKey[] = [
+  'text', 'inverseText', 'inactive', 'subtle', 'suggestion', 'remember', 'success', 'error',
+  'warning', 'merged', 'claude', 'permission', 'planMode', 'autoAccept', 'promptBorder',
+  'bashBorder', 'ide', 'diffAdded', 'diffRemoved', 'diffAddedDimmed', 'diffRemovedDimmed',
+  'diffAddedWord', 'diffRemovedWord',
+]
+
+// Functional color must be a theme key; this mod draws no Raster or Svg, so any raw color is a bug.
+function rawColors(elements: FoundElement[]): string[] {
+  return elements.flatMap(element =>
+    ['color', 'borderColor', 'backgroundColor']
+      .map(prop => [prop, element.props[prop]] as const)
+      .filter(([, value]) => value !== undefined && !THEME_KEYS.includes(value as ThemeKey))
+      .map(([prop, value]) => `${element.type}.${prop}=${String(value)}`),
+  )
+}
 
 for (const surface of ['desktop', 'terminal'] as const) {
   test(`counts down, goes cold, offers a handoff on a big chat (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
@@ -374,5 +395,73 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(forks, 'no ping while off').toBe(0)
     const said = JSON.stringify(await $.command.run({ command: 'keepwarm', args: '' } as never))
     expect(said, '/keepwarm says it is off').toContain('Turn it on with /mods')
+  })
+}
+
+for (const surface of ['desktop', 'terminal'] as const) {
+  test(`fits 40, 80 and 144 columns with theme colors only, warm and cold (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    on('session.start', async ($, e) => ({ cwd: e.cwd }) as never)
+    on('turn.start', async () => ({}) as never)
+    on('command.register', async () => ({ value: undefined }) as never)
+    const clock = mock.clock(on, { now: 1_000_000 })
+    on('session.id', async () => ({ value: 'sid' }) as never)
+    on('session.usage', async () => ({ value: { context: { tokens: 182_000, window: 1_000_000 } } }) as never)
+    on('process.run', async () => ({ value: { exitCode: 0, stdout: '5m\n', stderr: '' } }) as never)
+    on('fs.exists', async () => ({ value: false }) as never)
+    on('fs.write', async () => ({ value: undefined }) as never)
+    on('store.get', async () => ({ value: undefined }) as never)
+    on('store.set', async () => ({ value: undefined }) as never)
+    on('turn.complete', async () => ({ text: '' }) as never)
+    on('ui.render', { component: 'AbovePrompt' }, async ($, e) => {
+      const { Text } = $.ui.resolve(e)
+      return <Text>REST</Text>
+    })
+    await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface, isInteractive: true } as never)
+    await $.turn.complete({ answer: '' } as never)
+    await clock.settle()
+
+    for (const phase of ['warm', 'cold'] as const) {
+      if (phase === 'cold') await clock.advance(6 * 60_000)
+      for (const width of [40, 80, 144]) {
+        const props = { isWorking: false, hasSurvey: false, maxRows: 10, bodyColumns: width } as never
+        const v = await $.ui.mount({ plugin: 'cache-clock', surface, component: 'AbovePrompt', props })
+        expect(await v.find({ text: phase === 'warm' ? /Cache\ warm/ : /Cache\ cold/ }), `${phase} at ${width}`).toBeDefined()
+        expect(rawColors(await v.findAll({})), `raw colors at ${width}`).toEqual([])
+        const bar = (await v.findAll({ type: 'Text' })).reduce((n, t) => n + (/^━+$/.test(t.text ?? '') ? t.text!.length : 0), 0)
+        expect(bar, `bar width at ${width}`).toBe(phase === 'warm' ? barColumns(width) : 0)
+        await v.unmount()
+      }
+    }
+    expect([barColumns(40), barColumns(80), barColumns(144)]).toEqual([0, 10, 20])
+  })
+
+  test(`the countdown does not tick while a turn runs (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    let writes = 0
+    on('session.start', async ($, e) => ({ cwd: e.cwd }) as never)
+    on('turn.start', async () => ({ turnId: 't1' }) as never)
+    on('command.register', async () => ({ value: undefined }) as never)
+    const clock = mock.clock(on, { now: 1_000_000 })
+    on('session.id', async () => ({ value: 'sid' }) as never)
+    on('session.usage', async () => ({ value: { context: { tokens: 1000, window: 1_000_000 } } }) as never)
+    on('process.run', async () => ({ value: { exitCode: 0, stdout: '5m\n', stderr: '' } }) as never)
+    on('fs.exists', async () => ({ value: false }) as never)
+    on('fs.write', async () => ({ value: undefined }) as never)
+    on('store.get', async () => ({ value: undefined }) as never)
+    on('store.set', async () => ({ value: undefined }) as never)
+    on('turn.complete', async () => ({ text: '' }) as never)
+    on('state.set', async ($, e, next) => {
+      writes++
+      return next(e)
+    })
+    await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface, isInteractive: true } as never)
+    await $.turn.complete({ answer: '' } as never)
+    await clock.settle()
+    await clock.advance(5_000)
+    expect(writes, 'the countdown writes once a second while the band shows').toBeGreaterThanOrEqual(4)
+    await $.turn.start({ text: 'go', turnId: 't1' } as never)
+    await clock.settle()
+    const before = writes
+    await clock.advance(30_000)
+    expect(writes - before, 'no writes during a turn').toBe(0)
   })
 }
