@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { FoundElement } from 'claude-code/testing'
 import type { ThemeKey } from 'claude-code'
 
-import { crabSprite, drawCrab, drawJev, jevSprite, petCanvas, poseAt, tierOf } from './register'
+import { CRAB_BOX, JEV_BOX, JEV_JUDGE_BOX, crabSprite, drawCrab, drawJev, jevCanvas, jevSprite, petCanvas, poseAt, tierOf } from './register'
 
 /** The `on` a test body is handed. */
 type On = Parameters<NonNullable<Parameters<typeof test>[2]>>[1]
@@ -158,7 +158,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await callTool({ tool: 'mcp__00000000-0000-0000-0000-00000000000a__search_threads', tool_use_id: 'c2', query: 'invoice', agentId: 'agent-a2' } as never)
     await clock.advance(5_000)
 
-    const v = await $.ui.mount({ plugin: 'helper-desk', surface, component: 'Pane', requestId: 'helpers', props: props() })
+    const v = await $.ui.mount({ plugin: 'helper-desk', surface, component: 'Pane', requestId: 'helpers', props: props(80) })
     expect(await v.find({ text: /Read the research notes/ }), 'first description').toBeDefined()
     expect(await v.find({ text: /Find invoice threads/ }), 'second description').toBeDefined()
     expect(await v.find({ text: /Step 1 · Reading research\.md/ }), 'Read in words').toBeDefined()
@@ -203,7 +203,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       expect(rasters[0]!.props.cells !== rasters[1]!.props.cells, 'pets in different colours').toBe(true)
       expect(await v.findAll({ type: 'Svg' }), 'no Svg on the terminal').toHaveLength(0)
       expect(await v.find({ text: /▐/ }), 'no glyph pet').toBeUndefined()
-      const { columns, rows } = petCanvas(60)
+      const { columns, rows } = petCanvas()
       expect(rasters[0]!.props.columns, 'sized to the canvas').toBe(columns)
       expect(rasters[0]!.props.rows).toBe(rows)
       return
@@ -882,19 +882,20 @@ test('a card keeps only its last three peers', { timeoutMs: 30000 }, async ($, o
 
 // ---------- Crab motion ----------
 
-test('drawCrab is sized to its canvas and moves over time', () => {
-  for (const [columns, rows] of [[9, 4], [18, 7], [5, 3], [30, 8]] as const) {
-    expect(drawCrab(columns, rows, 0, 0).length, `${columns}x${rows}: 16 base64 characters a cell`).toBe(columns * rows * 16)
-  }
-  const { columns, rows } = petCanvas(80)
+test('drawCrab fills its one fixed canvas and moves over time', () => {
+  const { columns, rows } = petCanvas()
+  expect({ columns, rows }, 'the crab canvas is the box its art touches').toEqual({ columns: 21, rows: 8 })
+  expect(drawCrab(0, 0).length, '16 base64 characters a cell').toBe(columns * rows * 16)
   const seen = new Set<string>()
-  for (let t = 0; t < 4_000; t += 40) seen.add(drawCrab(columns, rows, t, 0))
+  for (let t = 0; t < 4_000; t += 40) seen.add(drawCrab(t, 0))
   expect(seen.size, 'bob, legs, claws and blink make many distinct frames').toBeGreaterThan(8)
-  expect(drawCrab(columns, rows, 0, 0, { still: true }), 'the standing pose does not move').toBe(drawCrab(columns, rows, 999, 0, { still: true }))
-  expect(drawCrab(columns, rows, 400, 0) !== drawCrab(columns, rows, 400, 1), 'each pet has its own colour and phase').toBe(true)
-  expect(petCanvas(40), 'a narrow pane gets the half-size pet').toEqual({ columns: 12, rows: 5 })
-  expect(petCanvas(80), 'a wide pane gets the full-size pet').toEqual({ columns: 24, rows: 9 })
-  expect(petCanvas(144), 'and so does a very wide one').toEqual({ columns: 24, rows: 9 })
+  expect(drawCrab(0, 0, { still: true }), 'the standing pose does not move').toBe(drawCrab(999, 0, { still: true }))
+  expect(drawCrab(400, 0) !== drawCrab(400, 1), 'each pet has its own colour and phase').toBe(true)
+  for (const tier of ['haiku', 'sonnet', 'opus'] as const) {
+    for (const effort of ['low', 'max'] as const) {
+      for (let t = 0; t < 2_000; t += 97) expect(drawCrab(t, 2, { tier, effort }).length, 'every frame has the same size').toBe(columns * rows * 16)
+    }
+  }
 })
 
 test('the pet timer runs only while a helper works, once, and stops on a denied blit, motion off or the last finish', { timeoutMs: 30000 }, async ($, on) => {
@@ -946,9 +947,9 @@ test('the pet timer runs only while a helper works, once, and stops on a denied 
   const t3 = probes.blits
   await clock.advance(400)
   expect(probes.blits, 'motion off: no blits').toBe(t3)
-  const { columns, rows } = petCanvas(80)
+  const { columns, rows } = petCanvas()
   const rasters = (await v.findAll({ type: 'Raster' })).map(r => String(r.props.cells))
-  expect(rasters, 'standing frames while off').toContain(drawCrab(columns, rows, 0, 1, { tier: 'opus', still: true }))
+  expect(rasters, 'standing frames while off').toContain(drawCrab(0, 1, { tier: 'opus', still: true }))
   await run('motion on')
   await clock.advance(400)
   expect(probes.blits, 'motion on: blits again').toBeGreaterThan(t3)
@@ -986,8 +987,8 @@ test('motion off is kept across sessions: a stored off starts the pets still', {
   const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'Pane', requestId: 'helpers', props: props(80) })
   await clock.advance(1_000)
   expect(probes.blits, 'stored off: no blits while working').toBe(0)
-  const { columns, rows } = petCanvas(80)
-  expect(String((await v.find({ type: 'Raster' }))?.props.cells), 'standing pose').toBe(drawCrab(columns, rows, 0, 0, { tier: 'opus', still: true }))
+  const { columns, rows } = petCanvas()
+  expect(String((await v.find({ type: 'Raster' }))?.props.cells), 'standing pose').toBe(drawCrab(0, 0, { tier: 'opus', still: true }))
   await v.unmount()
   const d = await $.ui.mount({ plugin: 'helper-desk', surface: 'desktop', component: 'Pane', requestId: 'helpers', props: props(80) })
   const svg = String((await d.findAll({ type: 'Svg' })).find(p => String(p.props.alt).startsWith('Claude crab'))?.props.source)
@@ -1137,7 +1138,7 @@ test('the shell size and the prop tell the model', () => {
     expect(props.crown > 0, `${tier}: crown`).toBe(tier === 'opus')
     expect(countOf(sprite, 'L') > 0, `${tier}: spots only on opus`).toBe(tier === 'opus')
   }
-  expect(drawCrab(24, 9, 0, 0, { tier: 'haiku', still: true }) !== drawCrab(24, 9, 0, 0, { tier: 'opus', still: true }), 'the art differs').toBe(true)
+  expect(drawCrab(0, 0, { tier: 'haiku', still: true }) !== drawCrab(0, 0, { tier: 'opus', still: true }), 'the art differs').toBe(true)
   expect([tierOf('Haiku 4.5'), tierOf('Opus 5.5'), tierOf('Sonnet'), tierOf('Fable 5.1'), tierOf('')], 'the tier from a model name; unknown is sonnet').toEqual(['haiku', 'opus', 'sonnet', 'sonnet', 'sonnet'])
 })
 
@@ -1207,15 +1208,17 @@ test('Jev bars show its pick, the asking cube tumbles, and a judged one stands s
     new Set([...jevSprite('answered', tier, 0, { still: true }).px].filter(([, c]) => c === 'k').map(([k]) => cellOf(k)[0])).size
   expect([barColumns('haiku'), barColumns('sonnet'), barColumns('opus')], 'one, two or three bars').toEqual([1, 2, 3])
   const asking = new Set<string>()
-  for (let t = 0; t < 1_440; t += 120) asking.add(drawJev(20, 9, 'asking', 'sonnet', t))
+  for (let t = 0; t < 1_440; t += 120) asking.add(drawJev('asking', 'sonnet', t))
   expect(asking.size, 'asking: three rotations, the hop and the first blinks, at least six distinct frames').toBeGreaterThanOrEqual(6)
-  expect(drawJev(20, 9, 'asking', 'sonnet', 0) !== drawJev(20, 9, 'asking', 'sonnet', 120), 'and each 120 ms step shows another').toBe(true)
-  expect(drawJev(20, 9, 'judged', 'sonnet', 0), 'judged: still').toBe(drawJev(20, 9, 'judged', 'sonnet', 777))
+  expect(drawJev('asking', 'sonnet', 0) !== drawJev('asking', 'sonnet', 120), 'and each 120 ms step shows another').toBe(true)
+  expect(drawJev('judged', 'sonnet', 0), 'judged: still').toBe(drawJev('judged', 'sonnet', 777))
   const judging = new Set<string>()
-  for (let t = 0; t < 2_400; t += 120) judging.add(drawJev(16, 5, 'judging', 'sonnet', t))
+  for (let t = 0; t < 2_400; t += 120) judging.add(drawJev('judging', 'sonnet', t))
   expect(judging.size, 'judging: bobs, tilts and the judge crab moves').toBeGreaterThan(4)
-  expect(drawJev(32, 9, 'judging', 'sonnet', 0, 0, true).length, 'judging canvas 32 wide').toBe(32 * 9 * 16)
-  expect(drawJev(20, 9, 'asking', 'sonnet', 0).length, 'single canvas 20 wide').toBe(20 * 9 * 16)
+  expect(jevCanvas('judging'), 'judging canvas holds Jev and the judge crab').toEqual({ columns: 28, rows: 9 })
+  expect(jevCanvas('asking'), 'single canvas').toEqual({ columns: 14, rows: 8 })
+  expect(drawJev('judging', 'sonnet', 0, 0, true).length).toBe(28 * 9 * 16)
+  expect(drawJev('asking', 'sonnet', 0).length).toBe(14 * 8 * 16)
 })
 
 test('Jev draws as an Svg with keyframes only while its call is open', { timeoutMs: 30000 }, async ($, on) => {
@@ -1378,4 +1381,130 @@ test('a Jev call left answered until it goes stale stops painting', { timeoutMs:
   const stale = probes.blits
   await clock.advance(2_000)
   expect(probes.blits, 'stale: no more frames').toBe(stale)
+})
+
+// ---------- Pixel art is never scaled ----------
+
+type Cells = { ch: number; fg: number; bg: number }[]
+/** The Raster buffer as its cells. */
+function decodeCells(b64: string): Cells {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+  const bytes: number[] = []
+  for (let i = 0; i < b64.length; i += 4) {
+    const n = [0, 1, 2, 3].map(k => (b64[i + k] === '=' ? 0 : chars.indexOf(b64[i + k]!)))
+    const triplet = (n[0]! << 18) | (n[1]! << 12) | (n[2]! << 6) | n[3]!
+    bytes.push((triplet >> 16) & 255, (triplet >> 8) & 255, triplet & 255)
+  }
+  const view = new DataView(Uint8Array.from(bytes).buffer)
+  return Array.from({ length: bytes.length / 12 }, (_, i) => ({ ch: view.getUint32(i * 12, true), fg: view.getUint32(i * 12 + 4, true), bg: view.getUint32(i * 12 + 8, true) }))
+}
+const NONE = 0x01000000
+/** The cells the grid pixels give, one pixel to a half-block pixel, worked out apart from the mod's own code. */
+function expectedCells(parts: { sprite: { px: Map<string, string>; colors: Record<string, string> }; ox: number }[], box: { x0: number; y0: number; w: number; h: number }): Cells {
+  const grid = new Map<string, number>()
+  for (const { sprite, ox } of parts) for (const [k, c] of sprite.px) {
+    const [x, y] = cellOf(k)
+    grid.set(`${x + ox},${y}`, Number.parseInt(sprite.colors[c]!.slice(1), 16))
+  }
+  const out: Cells = []
+  for (let row = 0; row < Math.ceil(box.h / 2); row += 1) {
+    for (let col = 0; col < box.w; col += 1) {
+      const top = grid.get(`${box.x0 + col},${box.y0 + row * 2}`) ?? NONE
+      const bottom = grid.get(`${box.x0 + col},${box.y0 + row * 2 + 1}`) ?? NONE
+      out.push(top === NONE && bottom === NONE ? { ch: 0x20, fg: NONE, bg: NONE } : top === NONE ? { ch: 0x2584, fg: bottom, bg: NONE } : { ch: 0x2580, fg: top, bg: bottom })
+    }
+  }
+  return out
+}
+
+test('the sprite boxes are exactly what the art touches', () => {
+  type B = { x0: number; y0: number; x1: number; y1: number }
+  const grow = (b: B, px: Map<string, string>, ox = 0) => {
+    for (const k of px.keys()) {
+      const [x, y] = cellOf(k)
+      b.x0 = Math.min(b.x0, x + ox)
+      b.y0 = Math.min(b.y0, y)
+      b.x1 = Math.max(b.x1, x + ox)
+      b.y1 = Math.max(b.y1, y)
+    }
+  }
+  const fresh = (): B => ({ x0: 99, y0: 99, x1: -1, y1: -1 })
+  const boxOf = (b: B) => ({ x0: b.x0, y0: b.y0, w: b.x1 - b.x0 + 1, h: b.y1 - b.y0 + 1 })
+  const crab = fresh()
+  for (const tier of ['haiku', 'sonnet', 'opus'] as const) {
+    for (const effort of ['low', 'medium', 'high', 'xhigh', 'max'] as const) {
+      for (let t = 0; t < 12_000; t += 25) for (const phase of [0, 740]) grow(crab, crabSprite(tier, t, { effort, phase }).px)
+    }
+  }
+  expect(boxOf(crab), 'crab box: every tier, pose, effort and the steam').toEqual(CRAB_BOX)
+  const alone = fresh()
+  const both = fresh()
+  for (const tier of ['haiku', 'sonnet', 'opus'] as const) {
+    for (const state of ['asking', 'answered', 'judging', 'judged'] as const) {
+      for (let t = 0; t < 7_000; t += 20) {
+        if (state === 'judging') {
+          grow(both, jevSprite(state, tier, t).px, 1)
+          grow(both, crabSprite('haiku', t, { effort: 'high', phase: 300 }).px, 9)
+        } else {
+          grow(alone, jevSprite(state, tier, t).px, 3)
+          grow(both, jevSprite(state, tier, t).px, 3)
+        }
+      }
+    }
+  }
+  expect(boxOf(alone), 'Jev alone').toEqual(JEV_BOX)
+  expect(boxOf(both).x0 === JEV_JUDGE_BOX.x0 && boxOf(both).y0 === JEV_JUDGE_BOX.y0 && boxOf(both).w === JEV_JUDGE_BOX.w && boxOf(both).h === JEV_JUDGE_BOX.h, 'Jev with the judge crab').toBe(true)
+})
+
+test('the Raster is the 1 to 1 grid at 40, 80 and 144 columns: no downsampling', { timeoutMs: 30000 }, async ($, on) => {
+  const files: Record<string, string> = {
+    [JEV_FILE]: jevFile([jevCall('j1', 'judged', { tier: 'opus', effort: 'high' }), jevCall('j2', 'judging', { tier: 'sonnet', effort: 'high' })]),
+  }
+  const { clock } = rig(on, files)
+  await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface: 'terminal', isInteractive: true } as never)
+  for (const [n, model] of [[1, 'haiku'], [2, 'sonnet'], [3, 'opus']] as const) {
+    await $.agent.spawn({ tool_use_id: `s${n}`, prompt: 'x', description: `Task ${n}`, subagentType: 'general-purpose', model } as never)
+  }
+  await clock.settle()
+  // Still frames: motion off, so the expected pose is the standing one.
+  await $.command.run({ command: 'helpers', args: 'motion off', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } } as never)
+  const hues = ['#dc2626', '#ea580c', '#eab308']
+  const crabs = (['haiku', 'sonnet', 'opus'] as const).map((tier, i) => expectedCells([{ sprite: crabSprite(tier, 0, { still: true, body: hues[i]! }), ox: 0 }], CRAB_BOX))
+  const judged = expectedCells([{ sprite: jevSprite('judged', 'opus', 0, { still: true }), ox: 3 }], JEV_BOX)
+  const judging = expectedCells(
+    [{ sprite: jevSprite('judging', 'sonnet', 0, { still: true }), ox: 1 }, { sprite: crabSprite('haiku', 0, { effort: 'high', phase: 300, still: true, body: '#ea580c' }), ox: 9 }],
+    JEV_JUDGE_BOX,
+  )
+  for (const width of WIDTHS) {
+    const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'Pane', requestId: 'helpers', props: props(width) })
+    const rasters = await v.findAll({ type: 'Raster' })
+    expect(rasters, `${width}: three crabs and two Jev cards`).toHaveLength(5)
+    const cells = rasters.map(r => decodeCells(String(r.props.cells)))
+    // The Jev cards come first in the pane, then the crabs.
+    expect(cells[0], `${width}: Jev judged`).toEqual(judged)
+    expect(cells[1], `${width}: Jev judging with its judge crab`).toEqual(judging)
+    cells.slice(2).forEach((got, i) => expect(got, `${width}: crab ${i} is the 1 to 1 grid`).toEqual(crabs[i]))
+    for (const r of rasters) expect(Number(r.props.columns) + 1, `${width}: the sprite fits inside the card`).toBeLessThanOrEqual(width - 4)
+    await v.unmount()
+  }
+})
+
+test('a sprite that leaves under 16 text columns stands above the text; it is never shrunk', { timeoutMs: 30000 }, async ($, on) => {
+  const files: Record<string, string> = { [JEV_FILE]: jevFile([jevCall('j1', 'judging', { tier: 'sonnet', effort: 'high' }), jevCall('j2', 'judged', { tier: 'sonnet', effort: 'high' })]) }
+  const { clock } = rig(on, files)
+  await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface: 'terminal', isInteractive: true } as never)
+  await $.agent.spawn({ tool_use_id: 's1', prompt: 'x', description: 'One', subagentType: 'general-purpose' } as never)
+  await clock.settle()
+  const sizes = new Set<string>()
+  for (const [width, stacked, jevStacked] of [[40, true, true], [80, false, false], [144, false, false]] as const) {
+    const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'Pane', requestId: 'helpers', props: props(width) })
+    expect((await v.find({ key: 'card-agent-a1' }))?.props.flexDirection, `${width}: crab card`).toBe(stacked ? 'column' : 'row')
+    expect((await v.find({ key: 'jev-body-j1' }))?.props.flexDirection, `${width}: judging card, 28 columns of sprite`).toBe(jevStacked ? 'column' : 'row')
+    // The narrow judged one has room beside its 14 columns at 80 and up, and at 40 too.
+    expect((await v.find({ key: 'jev-body-j2' }))?.props.flexDirection, `${width}: judged card`).toBe('row')
+    const crab = (await v.findAll({ type: 'Raster' })).pop()
+    sizes.add(`${crab?.props.columns}x${crab?.props.rows}`)
+    await v.unmount()
+  }
+  expect([...sizes], 'the same canvas at every width').toEqual(['21x8'])
 })

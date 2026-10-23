@@ -25,8 +25,10 @@ const SWITCH_MS = 3000
 const HISTORY = 3
 const MAX_STEPS = 200
 const TAG_W = 11
-// Sprites draw at full size from this body width up, and at half size below it, on the terminal and the Svg alike.
+// The Svg draws at 3 pixels a grid pixel from this body width up and 2 below it (whole numbers, so the art stays crisp); the Raster is always 1 to 1.
 const PET_WIDE_FROM = 80
+// The least text columns a sprite may leave beside it.
+const MIN_TEXT = 16
 // One cell of gap between the pet and the card text.
 const PET_GAP = 1
 // One timer repaints every running terminal pet.
@@ -135,8 +137,8 @@ function shade(hex: string, k: number) {
   return `#${[16, 8, 0].map(s => ch(s).toString(16).padStart(2, '0')).join('')}`
 }
 
-/** A sprite: "x,y" to a colour code, the code's colour, and which codes win when a canvas is scaled down (first wins). */
-type Sprite = { px: Map<string, string>; colors: Record<string, string>; order: string }
+/** A sprite: "x,y" to a colour code, and the code's colour. */
+type Sprite = { px: Map<string, string>; colors: Record<string, string> }
 type Placed = { sprite: Sprite; ox: number; oy: number }
 
 type Pose = { u: number; legs: number; up: boolean; blink: boolean; hop: number }
@@ -210,7 +212,6 @@ function crabParts(tier: Tier, up: boolean, legs: number, dy: number): CrabParts
 const crabColors = (body: string): Record<string, string> => ({
   B: body, D: shade(body, -0.32), L: shade(body, 0.45), E: EYE, O: INK_HEX, G: '#4ade80', g: '#15803d', Q: '#f5efe0', N: INK_HEX, C: '#f2c230', S: '#b8c2cf',
 })
-const CRAB_ORDER = 'ENCQGgLDBSO'
 const steamAt = (tier: Tier, k: number): [number, number][] => {
   const { x0, top } = crabGeo(tier)
   return [[x0 - 1, top - 1 - k], [x0 - 2, top - 2 - k], [x0, top - 3 - k]]
@@ -241,7 +242,7 @@ export function crabSprite(tier: Tier, t: number, o: { effort?: Effort; still?: 
     const k = Math.floor(wrap(p.u, STEAM_MS) / 300)
     for (const [x, y] of steamAt(tier, k)) if (y >= 0 && !px.has(`${x},${y}`)) px.set(`${x},${y}`, 'S')
   }
-  return { px, colors: crabColors(o.body ?? '#2563eb'), order: CRAB_ORDER }
+  return { px, colors: crabColors(o.body ?? '#2563eb') }
 }
 
 // Jev on a 14 by 16 grid, built from runs so every row is exactly 14 wide.
@@ -257,7 +258,6 @@ const CUBE = RUNS.map(r => r.map(([c, n]) => c.repeat(n)).join(''))
 const BARS: [number, number[]][] = [[8, [10]], [10, [9, 10]], [12, [8, 9, 10]]]
 const FACES = { t: '#f7a8df', l: '#e052c0', r: '#a8338e' }
 const TIERS: Tier[] = ['haiku', 'sonnet', 'opus']
-const JEV_ORDER = 'ekfbtlro'
 // The canvas by what is drawn: Jev alone, or Jev with the judge crab beside it.
 const JEV_CANVAS_W = 20
 const JEV_JUDGE_W = 32
@@ -319,7 +319,7 @@ export function jevSprite(state: JevState, tier: Tier | undefined, t: number, o:
   const parts = jevParts(bars, dy, tilt, legLift)
   const blink = !o.still && !o.noBlink && state !== 'judged' && state !== 'asking' && wrap(u, BLINK_MS) < BLINK_HOLD_MS
   const px: PxMap = new Map([...parts.top, ...parts.rest, ...parts.bars, ...parts.eyesLow, ...(blink ? [] : parts.eyesTop), ...parts.legs])
-  return { px, colors: jevColors(rot), order: JEV_ORDER }
+  return { px, colors: jevColors(rot) }
 }
 
 const ORANGE = '#ea580c'
@@ -348,54 +348,41 @@ function toBase64(bytes: Uint8Array): string {
   return out
 }
 
-/**
- * Sprites on a `gw` by `CANVAS_H` pixel grid as `columns` by `rows` half-block cells (each cell two
- * pixels tall). A smaller canvas shrinks the grid evenly; where pixels merge, the code that comes
- * first in the sprite's order wins, so eyes and props survive.
- */
-function spriteCells(parts: Placed[], gw: number, columns: number, rows: number): string {
-  const color = new Int32Array(gw * CANVAS_H).fill(-1)
-  const rank = new Uint8Array(gw * CANVAS_H).fill(255)
+// The terminal canvases, cropped to the box the art ever touches (every tier, pose and effort for a crab, every
+// state for Jev, with and without the judge crab), so a frame never changes size. Pixel art is drawn one grid pixel
+// to a half-block pixel, never scaled. x0 and y0 are grid pixels, w and h too; a test measures the boxes again.
+type Box = { x0: number; y0: number; w: number; h: number }
+export const CRAB_BOX: Box = { x0: 3, y0: 1, w: 21, h: 16 }
+export const JEV_BOX: Box = { x0: 3, y0: 0, w: 14, h: 16 }
+export const JEV_JUDGE_BOX: Box = { x0: 0, y0: 0, w: 28, h: 17 }
+const jevBox = (state: JevState) => (state === 'judging' ? JEV_JUDGE_BOX : JEV_BOX)
+const cellsOf = (b: Box) => ({ columns: b.w, rows: Math.ceil(b.h / 2) })
+
+/** The crab's canvas in cells. */
+export const petCanvas = () => cellsOf(CRAB_BOX)
+/** Jev's canvas in cells: wider while the judge crab stands beside it. */
+export const jevCanvas = (state: JevState) => cellsOf(jevBox(state))
+
+/** Sprites on a canvas of half-block cells (each two grid pixels tall), one grid pixel to a half-block pixel. */
+function spriteCells(parts: Placed[], box: Box): string {
+  const { columns, rows } = cellsOf(box)
+  const color = new Map<number, number>()
   for (const { sprite, ox, oy } of parts) {
     for (const [k, c] of sprite.px) {
       const [x, y] = k.split(',').map(Number) as [number, number]
-      const gx = x + ox
-      const gy = y + oy
       const hex = sprite.colors[c]
-      if (gx < 0 || gx >= gw || gy < 0 || gy >= CANVAS_H || !hex) continue
-      color[gy * gw + gx] = Number.parseInt(hex.slice(1), 16)
-      const r = sprite.order.indexOf(c)
-      rank[gy * gw + gx] = r < 0 ? 100 : r
+      if (hex) color.set((y + oy) * 1000 + x + ox, Number.parseInt(hex.slice(1), 16))
     }
   }
-  const scale = gw / columns
-  // A target pixel looks at the grid pixels it covers.
-  const sample = (x: number, y: number) => {
-    const x0 = Math.floor(x * scale)
-    const x1 = Math.max(x0 + 1, Math.ceil((x + 1) * scale))
-    const y0 = Math.floor(y * scale)
-    const y1 = Math.max(y0 + 1, Math.ceil((y + 1) * scale))
-    let best = DEFAULT_COLOR
-    let bestRank = 256
-    for (let gy = y0; gy < Math.min(y1, CANVAS_H); gy += 1) {
-      for (let gx = x0; gx < Math.min(x1, gw); gx += 1) {
-        const i = gy * gw + gx
-        if (color[i]! >= 0 && rank[i]! < bestRank) {
-          best = color[i]!
-          bestRank = rank[i]!
-        }
-      }
-    }
-    return best
-  }
+  const at = (x: number, y: number) => color.get((box.y0 + y) * 1000 + box.x0 + x) ?? DEFAULT_COLOR
   // A DataView writes little-endian whatever the platform's byte order, as a Raster requires.
   const bytes = new Uint8Array(columns * rows * 12)
   const view = new DataView(bytes.buffer)
   let offset = 0
   for (let row = 0; row < rows; row += 1) {
     for (let col = 0; col < columns; col += 1) {
-      const top = sample(col, row * 2)
-      const bottom = sample(col, row * 2 + 1)
+      const top = at(col, row * 2)
+      const bottom = row * 2 + 1 < box.h ? at(col, row * 2 + 1) : DEFAULT_COLOR
       let cell: [number, number, number]
       if (top === DEFAULT_COLOR && bottom === DEFAULT_COLOR) cell = [0x20, DEFAULT_COLOR, DEFAULT_COLOR]
       else if (top === DEFAULT_COLOR) cell = [0x2584, bottom, DEFAULT_COLOR]
@@ -409,24 +396,16 @@ function spriteCells(parts: Placed[], gw: number, columns: number, rows: number)
   return toBase64(bytes)
 }
 
-/** The crab as `columns` by `rows` half-block cells for a Raster or a blit: the pose at `t` ms, its model's art, its body colour. */
-export function drawCrab(columns: number, rows: number, t: number, hue: number, o: { tier?: Tier; effort?: Effort; still?: boolean } = {}): string {
+/** The crab as cells for a Raster or a blit: the pose at `t` ms, its model's art, its body colour. */
+export function drawCrab(t: number, hue: number, o: { tier?: Tier; effort?: Effort; still?: boolean } = {}): string {
   const sprite = crabSprite(o.tier ?? 'sonnet', t, { effort: o.effort, still: o.still, phase: phaseOf(hue), body: hueOf(hue).color })
-  return spriteCells([{ sprite, ox: 0, oy: 0 }], GRID_W, columns, rows)
+  return spriteCells([{ sprite, ox: 0, oy: 0 }], CRAB_BOX)
 }
 
 /** Jev (with the judge crab beside it while judging) as cells; `phase` keeps one call out of step with another. */
-export function drawJev(columns: number, rows: number, state: JevState, tier: Tier | undefined, t: number, phase = 0, still = false): string {
-  return spriteCells(jevPlaced(state, tier, t, phase, still), jevGridW(state), columns, rows)
+export function drawJev(state: JevState, tier: Tier | undefined, t: number, phase = 0, still = false): string {
+  return spriteCells(jevPlaced(state, tier, t, phase, still), jevBox(state))
 }
-
-/** A canvas for a body width: the grid shrinks by half under the wide breakpoint, so the sprite keeps its shape. */
-export function spriteCanvas(bodyColumns: number, gridW: number): { columns: number; rows: number } {
-  const scale = bodyColumns >= PET_WIDE_FROM ? 1 : 2
-  return { columns: Math.ceil(gridW / scale), rows: Math.ceil(Math.ceil(CANVAS_H / scale) / 2) }
-}
-/** The crab's canvas for a body width. */
-export const petCanvas = (bodyColumns: number) => spriteCanvas(bodyColumns, GRID_W)
 
 // ---------- The same art as Svg: layers that CSS keyframes move, so a pet moves with no redraws ----------
 
@@ -599,8 +578,8 @@ let motion = true
 // The main chat's model, from its own model requests: what a helper that inherits it draws as.
 let mainModel = ''
 // Each pet Raster the last draw mounted, by its key: what the frame timer blits.
-// A Jev entry also keeps the grid width it was drawn for: a call that moves on to another state draws another canvas.
-type PetEntry = { requestId: string; id: string; columns: number; rows: number } & ({ kind: 'crab'; hue: number } | { kind: 'jev'; gridW: number })
+// A Jev entry's columns are the canvas it was mounted with: a call that moves on to another state draws another canvas.
+type PetEntry = { requestId: string; id: string; columns: number; rows: number } & ({ kind: 'crab'; hue: number } | { kind: 'jev' })
 const pets = new Map<string, PetEntry>()
 // Effort asked for in an Agent call, by its tool_use_id, until the spawn picks it up.
 const dispatchEffort = new Map<string, Effort>()
@@ -899,7 +878,7 @@ const jevPhaseOf = (id: string) => [...id].reduce((n, ch) => (n * 31 + ch.charCo
 function petMoving(pet: PetEntry): boolean {
   if (pet.kind === 'crab') return helpers.find(x => x.id === pet.id)?.phase === 'working'
   const c = jev.find(x => x.id === pet.id)
-  return !!c && jevMoving(c) && jevGridW(jevStateOf(c)) === pet.gridW
+  return !!c && jevMoving(c) && jevCanvas(jevStateOf(c)).columns === pet.columns
 }
 
 /** The next frame of a moving pet, or null: a pet that stands still, or whose canvas is out of date until the next draw. */
@@ -907,10 +886,10 @@ function petCells(pet: PetEntry, t: number): string | null {
   if (!petMoving(pet)) return null
   if (pet.kind === 'crab') {
     const hp = helpers.find(x => x.id === pet.id)!
-    return drawCrab(pet.columns, pet.rows, t, pet.hue, { tier: tierOfHelper(hp), effort: effortOf(hp.level) })
+    return drawCrab(t, pet.hue, { tier: tierOfHelper(hp), effort: effortOf(hp.level) })
   }
   const c = jev.find(x => x.id === pet.id)!
-  return drawJev(pet.columns, pet.rows, jevStateOf(c), c.tier, t, jevPhaseOf(c.id))
+  return drawJev(jevStateOf(c), c.tier, t, jevPhaseOf(c.id))
 }
 
 const movingPets = () => [...pets.values()].some(petMoving)
@@ -1811,10 +1790,12 @@ export const register: Register = on => {
     const { value: cost = { usd: null } } = await $.state.get(COST)
     const width = Math.max(32, e.props.bodyColumns)
     // Inside a card: its border and padding take 4 columns, the pet petW more.
-    const canvas = petCanvas(e.props.bodyColumns)
+    const canvas = petCanvas()
     const petSvgSize = svgSize(e.props.bodyColumns, GRID_W)
     const petW = Svg ? petSvgSize.columns : canvas.columns + PET_GAP
-    const cw = width - 4 - petW
+    // A pet that leaves the text fewer columns than this stands above the text instead of beside it; it is never shrunk.
+    const stacked = width - 4 - petW < MIN_TEXT
+    const cw = stacked ? width - 4 : width - 4 - petW
 
     const { running, finished, stopped } = byGroup(list)
 
@@ -1850,7 +1831,7 @@ export const register: Register = on => {
       pets.set(`crab-${hp.id}`, { kind: 'crab', requestId: e.requestId, id: hp.id, columns, rows, hue: hp.hue })
       return (
         <Box key={`pet-${hp.id}`} width={petW} flexShrink={0}>
-          <Raster key={`crab-${hp.id}`} columns={columns} rows={rows} cells={drawCrab(columns, rows, now, hp.hue, { tier, effort, still: !moving })} />
+          <Raster key={`crab-${hp.id}`} columns={columns} rows={rows} cells={drawCrab(now, hp.hue, { tier, effort, still: !moving })} />
         </Box>
       )
     }
@@ -1917,7 +1898,7 @@ export const register: Register = on => {
       return (
         <Box
           key={`card-${hp.id}`}
-          flexDirection="row"
+          flexDirection={stacked ? 'column' : 'row'}
           width={width}
           marginBottom={1}
           borderStyle="round"
@@ -2062,7 +2043,7 @@ export const register: Register = on => {
       const moving = moves && jevMoving(c)
       const phase = jevPhaseOf(c.id)
       const gw = jevGridW(state)
-      const art = spriteCanvas(e.props.bodyColumns, gw)
+      const art = jevCanvas(state)
       const svgBox = svgSize(e.props.bodyColumns, gw)
       let sprite = null
       let spriteW = 0
@@ -2075,13 +2056,15 @@ export const register: Register = on => {
         )
       } else if (Raster) {
         spriteW = art.columns + 1
-        pets.set(`jev-${c.id}`, { kind: 'jev', gridW: gw, requestId: e.requestId, id: c.id, columns: art.columns, rows: art.rows })
+        pets.set(`jev-${c.id}`, { kind: 'jev', requestId: e.requestId, id: c.id, columns: art.columns, rows: art.rows })
         sprite = (
           <Box key={`jev-art-${c.id}`} width={spriteW} flexShrink={0}>
-            <Raster key={`jev-${c.id}`} columns={art.columns} rows={art.rows} cells={drawJev(art.columns, art.rows, state, c.tier, now, phase, !moving)} />
+            <Raster key={`jev-${c.id}`} columns={art.columns} rows={art.rows} cells={drawJev(state, c.tier, now, phase, !moving)} />
           </Box>
         )
       }
+      // Too little room beside the sprite: the line goes under it.
+      const jevStacked = jw - spriteW < MIN_TEXT
       return (
         <Box key={`jev-${c.id}`} flexDirection="column" width={width} borderStyle="round" borderColor="suggestion" borderDimColor={!live} paddingX={1} marginBottom={1}>
           <Box key={`jev-head-${c.id}`} flexDirection="row" gap={1} width={jw}>
@@ -2092,10 +2075,10 @@ export const register: Register = on => {
               {`· ${text}`}
             </Text>
           </Box>
-          <Box key={`jev-body-${c.id}`} flexDirection="row" width={jw}>
+          <Box key={`jev-body-${c.id}`} flexDirection={jevStacked ? 'column' : 'row'} width={jw}>
             {sprite}
             <Text key={`jev-ran-${c.id}`} dimColor wrap="truncate-end">
-              {cut(ran, jw - spriteW)}
+              {cut(ran, jevStacked ? jw : jw - spriteW)}
             </Text>
           </Box>
           {verdict ? (
