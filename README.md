@@ -15,8 +15,9 @@ Mods for Claude Code.
 | [screen-share](screen-share) | `/screen-share` hides names, emails, phone numbers and money amounts on screen while you record. |
 | [replay-theater](replay-theater) | `/replay` steps through the file edits Claude made in the last turn, one diff at a time. |
 | [mods](mods) | `/mods` opens a pane to turn each mod on or off, including mods installed from other marketplaces, and to install mods a marketplace offers that are not installed yet. |
+| [effort-optimizer](effort-optimizer) | Before Claude starts on a prompt, a quick Sonnet check picks the effort level it needs (Low to Max) and offers a one-click switch, or sets it by itself with `/effort-optimizer auto`. |
 
-The eight mods other than replay-theater, from brain-dump to mods, come from Ben AI's benai-mods ([benai.co](https://www.benai.co)) and are redistributed with permission, with Windows fixes added here. replay-theater (one Ben AI change: `/mods` switch support) is Anthropic's sample mod from [anthropics/claude-code-playground](https://github.com/anthropics/claude-code-playground/tree/main/claude-code/mods/replay-theater), under the Apache 2.0 license in its `LICENSE`.
+The nine mods other than replay-theater, from brain-dump to effort-optimizer, come from Ben AI's benai-mods ([benai.co](https://www.benai.co)) and are redistributed with permission, with Windows fixes added here. replay-theater (one Ben AI change: `/mods` switch support) is Anthropic's sample mod from [anthropics/claude-code-playground](https://github.com/anthropics/claude-code-playground/tree/main/claude-code/mods/replay-theater), under the Apache 2.0 license in its `LICENSE`.
 
 ### Reflect setting
 
