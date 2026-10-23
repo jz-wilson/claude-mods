@@ -1,5 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
-import type { TestBody } from 'claude-code/testing'
+import type { FoundElement, TestBody } from 'claude-code/testing'
+import type { ThemeKey } from 'claude-code'
 
 type On = Parameters<TestBody>[1]
 
@@ -263,5 +264,47 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await $.prompt.submit({ text: 'No, never use em dashes there.', wait: false, origin: { kind: 'composer' } } as never)
     await clock.settle()
     expect(w.drafts, 'no new draft while off').toBe(1)
+  })
+}
+
+const THEME_KEYS: readonly ThemeKey[] = [
+  'text', 'inverseText', 'inactive', 'subtle', 'suggestion', 'remember', 'success', 'error',
+  'warning', 'merged', 'claude', 'permission', 'planMode', 'autoAccept', 'promptBorder',
+  'bashBorder', 'ide', 'diffAdded', 'diffRemoved', 'diffAddedDimmed', 'diffRemovedDimmed',
+  'diffAddedWord', 'diffRemovedWord',
+]
+
+// Functional color must be a theme key, never hex, a color name or rgb().
+function rawColors(elements: FoundElement[]): string[] {
+  return elements.flatMap(element =>
+    ['color', 'borderColor', 'backgroundColor']
+      .map(prop => [prop, element.props[prop]] as const)
+      .filter(([, value]) => value !== undefined && !THEME_KEYS.includes(value as ThemeKey))
+      .map(([prop, value]) => `${element.type}.${prop}=${String(value)}`),
+  )
+}
+
+for (const surface of ['desktop', 'terminal'] as const) {
+  test(`offer and saved bands use theme colors at 40, 80 and 144 columns (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const w = world()
+    mockAll(on, w)
+    const clock = mock.clock(on, { now: Date.UTC(2026, 9, 15, 12) })
+    await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface, isInteractive: true } as never)
+    await offer($, clock, 'No, I said never use em dashes. Do not do that again.', 't1')
+
+    for (const bodyColumns of [40, 80, 144]) {
+      const full = { isWorking: false, hasSurvey: false, maxRows: 10, bodyColumns, scroll: { offset: 0, bodyRows: 10 }, view: {} } as never
+      const ui = await $.ui.mount({ plugin: 'reflect', surface, component: 'AbovePrompt', props: full })
+      expect(await ui.find({ key: 'everywhere' }), `offer at ${bodyColumns}`).toBeDefined()
+      expect(rawColors(await ui.findAll({})), `offer colors at ${bodyColumns}`).toEqual([])
+      expect(await ui.find({ text: /Never use em dashes/ }), 'rule drawn').toBeDefined()
+      await ui.unmount()
+    }
+
+    const v = await $.ui.mount({ plugin: 'reflect', surface, component: 'AbovePrompt', props })
+    await v.press({ key: 'everywhere' })
+    const saved = await $.ui.mount({ plugin: 'reflect', surface, component: 'AbovePrompt', props })
+    expect(await saved.find({ key: 'open' }), 'saved line').toBeDefined()
+    expect(rawColors(await saved.findAll({})), 'saved colors').toEqual([])
   })
 }

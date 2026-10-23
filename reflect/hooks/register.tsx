@@ -9,10 +9,6 @@ const CANCEL = 'Cancel'
 const HEADING = '## Rules from corrections'
 const SAVED_MS = 8000
 
-const ACCENT = '#d97757'
-const GOOD = '#16a34a'
-const BAD = '#dc2626'
-
 // The cheap first pass: only prompts with one of these go on to the model.
 const HINTS = [
   /\bno\b/i,
@@ -445,7 +441,7 @@ export const register: Register = (on, options) => {
           {rest}
           <Box flexDirection="row" alignItems="center" gap={1}>
             <Text wrap="truncate-middle">
-              <Text color={GOOD}>✓</Text>
+              <Text color="success">✓</Text>
               <Text> {b.note ? `${b.note} in` : 'Saved to'} </Text>
               <Text dimColor>{b.shortPath}</Text>
             </Text>
@@ -460,16 +456,16 @@ export const register: Register = (on, options) => {
         {rest}
         <Box flexDirection="column">
           <Text>
-            <Text color={ACCENT}>●</Text>
-            <Text bold> Save this as a rule?</Text>
+            <Text color="claude">●</Text>
+            <Text weight="bold"> Save this as a rule?</Text>
           </Text>
-          <Text>"{b.rule}"</Text>
-          <Box flexDirection="row" gap={1}>
+          <Text wrap="truncate-end">"{b.rule}"</Text>
+          <Box flexDirection="row" flexWrap="wrap" gap={1}>
             <Button key="everywhere" label="Save everywhere" variant="primary" onPress={noop} />
             <Button key="vault" label="Save to vault" variant="secondary" onPress={noop} />
             <Button key="skip" label="Skip" role="dismiss" onPress={noop} />
           </Box>
-          {b.note ? <Text color={BAD}>{b.note}</Text> : null}
+          {b.note ? <Text color="error" wrap="truncate-end">{b.note}</Text> : null}
         </Box>
       </Box>
     )
