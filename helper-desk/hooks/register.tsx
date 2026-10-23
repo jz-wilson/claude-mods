@@ -516,6 +516,14 @@ async function setHidden($: EngineInterface, value: boolean) {
 
 const GROUPS = ['running', 'finished', 'stopped']
 
+/** The cards as the pane lists them, top to bottom: Running, then Finished, then Stopped. */
+function byGroup(list: Helper[]) {
+  const running = list.filter(hp => hp.phase === 'working')
+  const finished = list.filter(hp => hp.phase === 'done')
+  const stopped = list.filter(hp => hp.phase === 'failed')
+  return { running, finished, stopped, ordered: [...running, ...finished, ...stopped] }
+}
+
 async function hidePane($: EngineInterface) {
   await setHidden($, true)
   say($, `${TITLE} hidden. Type /helpers or open /mods to show it.`)
@@ -943,8 +951,8 @@ export const register: Register = on => {
     }
     if (verb === 'steps') {
       const { value: list = [] } = await $.state.get(HELPERS)
-      const id = list.find((hp, i) => hp.id === arg || String(i + 1) === arg)?.id
-      if (!id) return { text: 'Usage: /helpers steps <card number or agent id>' }
+      const id = byGroup(list).ordered.find((hp, i) => hp.id === arg || String(i + 1) === arg)?.id
+      if (!id) return { text: 'Usage: /helpers steps <card number, top to bottom, or agent id>' }
       await toggleIn($, 'open', id)
       return { text: `Toggled the steps of ${id}.` }
     }
@@ -1064,11 +1072,16 @@ export const register: Register = on => {
   })
 
   on('turn.complete', async ($, e, next) => {
-    const r = await next(e)
     const id = e.agentId
-    if (!id) {
-      mainTurn = false
-      syncShimmer($)
+    let r: Awaited<ReturnType<typeof next>>
+    try {
+      r = await next(e)
+    } finally {
+      // Whatever the turn did, the main loop is idle now.
+      if (!id) {
+        mainTurn = false
+        syncShimmer($)
+      }
     }
     if (id && !off && helpers.some(hp => hp.id === id)) {
       const failed = e.reason === 'error' || e.reason === 'refusal' || e.isAborted
@@ -1093,9 +1106,7 @@ export const register: Register = on => {
     const petW = Svg ? PET_W : CLAWD_W
     const cw = width - 4 - petW
 
-    const running = list.filter(hp => hp.phase === 'working')
-    const finished = list.filter(hp => hp.phase === 'done')
-    const stopped = list.filter(hp => hp.phase === 'failed')
+    const { running, finished, stopped } = byGroup(list)
 
     // Header tiles: only numbers the engine gave.
     const tiles: { label: string; value: string }[] = []

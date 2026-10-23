@@ -554,6 +554,34 @@ test('the flash follows the main turn only', { timeoutMs: 30000 }, async ($, on)
   expect(await seen(), 'subagent done mid-turn: keeps flashing').toBe(2)
   await $.turn.complete({ ...done, turnId: 't1' } as never)
   expect(await seen(), 'main turn over: static again').toBe(1)
+  // An aborted turn and a failed one stop it like a finished one.
+  await $.turn.start({ turnId: 't2', text: 'again' } as never)
+  expect(await seen(), 'next main turn: flashes').toBe(2)
+  await $.turn.complete({ ...done, turnId: 't2', isAborted: true, reason: 'aborted' } as never)
+  expect(await seen(), 'aborted turn: static').toBe(1)
+  await $.turn.start({ turnId: 't3', text: 'once more' } as never)
+  expect(await seen(), 'next main turn: flashes').toBe(2)
+  await $.turn.complete({ ...done, turnId: 't3', reason: 'error' } as never)
+  expect(await seen(), 'failed turn: static').toBe(1)
+})
+
+test('/helpers steps <n> counts cards in the order the pane lists them', { timeoutMs: 30000 }, async ($, on) => {
+  const { clock, agents } = rig(on, {})
+  await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface: 'terminal', isInteractive: true } as never)
+  const callTool = $.tool.call as unknown as (input: unknown) => Promise<unknown>
+  for (const [n, d] of [[1, 'First'], [2, 'Second']] as const) await $.agent.spawn({ tool_use_id: `s${n}`, prompt: 'x', description: d, subagentType: 'general-purpose' } as never)
+  await callTool({ tool: 'Read', tool_use_id: 'c1', file_path: '/a.md', agentId: 'agent-a1' })
+  await callTool({ tool: 'Read', tool_use_id: 'c2', file_path: '/b.md', agentId: 'agent-a2' })
+  await clock.settle()
+  // The first helper finishes: the pane now lists Second (running) above First (finished).
+  await $.turn.complete({ answer: 'ok', agentId: 'agent-a1', reason: 'answer', durationMs: 1, isAborted: false, turnId: 't1' } as never)
+  await clock.settle()
+  expect(agents, 'two spawned').toHaveLength(2)
+  const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'Pane', requestId: 'helpers', props: props(80) })
+  const run = (args: string) => $.command.run({ command: 'helpers', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } } as never)
+  await run('steps 1')
+  expect((await v.find({ key: 'steps-agent-a2' }))?.text ?? '', 'card 1 is the running one').toContain('Hide steps')
+  expect((await v.find({ key: 'steps-agent-a1' }))?.text ?? '', 'card 2 stays closed').toContain('All 1 step')
 })
 
 test('the pane and band fit 40, 80 and 144 columns on every surface, with theme colours only', { timeoutMs: 30000 }, async ($, on) => {
