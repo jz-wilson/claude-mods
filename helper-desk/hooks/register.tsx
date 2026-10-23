@@ -727,6 +727,19 @@ function pickHue() {
 }
 const copy = (hp: Helper): Helper => ({ ...hp, steps: hp.steps.map(st => ({ ...st })), sentTo: [...hp.sentTo], heardFrom: [...hp.heardFrom] })
 
+/**
+ * The person's home folder, where ~/.claude lives: HOME, else USERPROFILE (Windows). Only when neither is set does it
+ * fall back to the folder above ".claude" in the plugin's own path, which is right for an installed copy and
+ * wrong for one loaded with --plugin-dir from elsewhere.
+ */
+async function resolveHome($: EngineInterface) {
+  const fromEnv = (await $.env.get('HOME').catch(() => undefined)) || (await $.env.get('USERPROFILE').catch(() => undefined))
+  if (fromEnv) return fromEnv.replace(/\\/g, '/').replace(/\/$/, '')
+  const guess = $.plugin.root.replace(/\\/g, '/').split('/.claude/')[0] ?? ''
+  console.debug(`helper-desk: no HOME or USERPROFILE, taking ${guess} from the plugin path`)
+  return guess
+}
+
 async function log($: EngineInterface, line: string) {
   try {
     const dir = `${home}/.claude/mods-logs`
@@ -1528,7 +1541,7 @@ ${body}
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    home = $.plugin.root.replace(/\\/g, '/').split('/.claude/')[0] ?? ''
+    home = await resolveHome($)
     sessionId = await $.session.id().catch(() => '')
     await $.command.register({ name: 'helpers', description: 'Show the Helper Desk: the task list and one live card per subagent', argumentHint: '[hide|fold|steps|goto|motion]', immediate: true })
     await $.tool.register({

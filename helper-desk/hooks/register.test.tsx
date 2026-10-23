@@ -43,7 +43,7 @@ function rig(on: On, files: Record<string, string>, stored: Record<string, unkno
   const closed: string[] = []
   const ran: string[][] = []
   const toasts: string[] = []
-  const probes = { blits: 0, badBlits: 0, denyBlit: false, jevReads: 0, onBlit: undefined as undefined | (() => Promise<unknown>) }
+  const probes = { home: '/Users/test', blits: 0, badBlits: 0, denyBlit: false, jevReads: 0, onBlit: undefined as undefined | (() => Promise<unknown>) }
 
   on('session.start', async ($, e) => ({ cwd: e.cwd }) as never)
   on('session.id', async () => ({ value: 'sess1' }) as never)
@@ -110,7 +110,10 @@ function rig(on: On, files: Record<string, string>, stored: Record<string, unkno
     files[path] = text
     return { value: undefined } as never
   })
-  on('env.get', async () => ({ value: 'Windows_NT' }) as never)
+  on('env.get', async ($, e) => {
+    const name = (e as { name: string }).name
+    return { value: name === 'OS' ? 'Windows_NT' : name === 'HOME' ? probes.home : undefined } as never
+  })
   on('process.run', async ($, e) => {
     const argv = (e as { argv?: string[]; command?: string[] }).argv ?? (e as { command?: string[] }).command ?? []
     ran.push(argv)
@@ -1510,4 +1513,18 @@ test('a sprite that leaves under 16 text columns stands above the text; it is ne
     await v.unmount()
   }
   expect([...sizes], 'the same canvas at every width').toEqual(['21x8'])
+})
+
+test('the home folder comes from HOME, not from where the plugin is loaded', { timeoutMs: 30000 }, async ($, on) => {
+  // A plugin loaded from a checkout (--plugin-dir) has no .claude folder in its own path.
+  const files: Record<string, string> = { '*/Users/real/.claude/logs/jev-live/sess1.json': jevFile([judgedCall]) }
+  const { probes, clock } = rig(on, files)
+  probes.home = '/Users/real'
+  await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface: 'terminal', isInteractive: true } as never)
+  const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'Pane', requestId: 'helpers', props: props(80) })
+  expect(await v.findAll({ type: 'Text', text: /^ Jev $/ }), 'the Jev card from the real home').toHaveLength(1)
+  // State files land under the same home (the harness may put a drive in front of the path).
+  await $.tool.call({ tool: 'mcp__helper-desk__plan', tool_use_id: 'p1', title: 'T', steps: [{ text: 'a', status: 'pending' }] } as never)
+  await clock.settle()
+  expect(Object.keys(files).some(k => k.endsWith('/Users/real/.claude/mods-state/plan-sess1.json')), 'plan under the real home').toBe(true)
 })
