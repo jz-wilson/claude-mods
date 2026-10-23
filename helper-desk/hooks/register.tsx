@@ -1,4 +1,4 @@
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, ThemeKey } from 'claude-code'
 
 import type { BandPlan, Helper, HelperPhase, PlanStatus, Step, StepKind } from '../types'
 import { connectorName, splitTool } from './connectors'
@@ -38,44 +38,48 @@ const CLAWD: string[][] = [
 // A running pet changes frame every second tick: about every 600 ms.
 const FRAME_TICKS = 2
 
-const ACCENT = '#d97757'
-const GOOD = '#16a34a'
-const BAD = '#dc2626'
-const WARN = '#eab308'
-const INK = '#1c1917'
-// The task list is purple: the step in progress flashes between deep and light.
-const P_LIGHT = '#c4b5fd'
-const P_MID = '#8b5cf6'
-const P_DEEP = '#6d28d9'
+// Functional colour follows the person's theme. Only the Svg drawings below keep hex.
+const ACCENT: ThemeKey = 'claude'
+const GOOD: ThemeKey = 'success'
+const BAD: ThemeKey = 'error'
+const WARN: ThemeKey = 'warning'
+// Text on a filled group heading.
+const INK: ThemeKey = 'inverseText'
+// The task list is purple (the theme's "merged"): the step in progress flashes between bright and dim.
+const PURPLE: ThemeKey = 'merged'
+// The red inside the Svg bar of a stopped card.
+const SVG_BAD = '#dc2626'
 // Quarter circles read clearly on desktop fonts and in the terminal.
 const SPIN = ['◐', '◓', '◑', '◒']
 const PULSE = ['●∙∙', '∙●∙', '∙∙●', '∙●∙']
 
-const KIND_COLOR: Record<StepKind, string> = {
-  Command: '#ca8a04',
-  Connector: '#2563eb',
-  'File read': '#16a34a',
-  'File write': '#d97757',
-  Skill: '#9333ea',
-  Web: '#0891b2',
-  Subagent: '#db2777',
-  Tool: '#78716c',
+const KIND_COLOR: Record<StepKind, ThemeKey> = {
+  Command: 'warning',
+  Connector: 'suggestion',
+  'File read': 'success',
+  'File write': 'claude',
+  Skill: 'merged',
+  Web: 'planMode',
+  Subagent: 'permission',
+  Tool: 'subtle',
 }
 
 // ---------- Pets: a pixel Claude crab, one body colour per helper ----------
 
 type Px = [x: number, y: number]
 
-// Eight body colours that are easy to tell apart and read on light and dark.
-const HUES: { name: string; color: string }[] = [
-  { name: 'red', color: '#dc2626' },
-  { name: 'orange', color: '#ea580c' },
-  { name: 'yellow', color: '#eab308' },
-  { name: 'green', color: '#16a34a' },
-  { name: 'teal', color: '#0d9488' },
-  { name: 'blue', color: '#2563eb' },
-  { name: 'purple', color: '#9333ea' },
-  { name: 'pink', color: '#db2777' },
+// Eight body colours that are easy to tell apart and read on light and dark. `color` paints the
+// Svg pet and bar (which carry their own outline); `key` is the nearest theme colour, for the
+// terminal glyph pet, bar and card border.
+const HUES: { name: string; color: string; key: ThemeKey }[] = [
+  { name: 'red', color: '#dc2626', key: 'error' },
+  { name: 'orange', color: '#ea580c', key: 'claude' },
+  { name: 'yellow', color: '#eab308', key: 'warning' },
+  { name: 'green', color: '#16a34a', key: 'success' },
+  { name: 'teal', color: '#0d9488', key: 'planMode' },
+  { name: 'blue', color: '#2563eb', key: 'suggestion' },
+  { name: 'purple', color: '#9333ea', key: 'merged' },
+  { name: 'pink', color: '#db2777', key: 'diffRemovedWord' },
 ]
 const hueOf = (hue: number) => HUES[((hue % HUES.length) + HUES.length) % HUES.length]!
 
@@ -570,6 +574,8 @@ let planShown = false
 let shimmer: { cancel: () => void } | null = null
 let holdTimer: { cancel: () => void } | null = null
 let shimN = 0
+// True while the main loop (not a subagent) runs a turn; the flash is idle otherwise.
+let mainTurn = false
 // The plan nudge: main-chat tool calls this turn, and whether a plan came in.
 let turnCalls = 0
 let turnPlanned = false
@@ -621,9 +627,9 @@ async function drawPlan($: EngineInterface) {
   syncShimmer($)
 }
 
-/** The shimmer clock runs only while a shown plan has a step in progress. */
+/** The shimmer clock runs only while the main loop runs a turn and a shown plan has a step in progress. */
 function syncShimmer($: EngineInterface) {
-  const need = !off && !hidden && planShown && !!plan?.steps.some(st => st.status === 'in_progress')
+  const need = mainTurn && !off && !hidden && planShown && !!plan?.steps.some(st => st.status === 'in_progress')
   if (need) {
     shimmer ??= $.clock.every(SHIMMER_MS, () => {
       shimN += 1
@@ -839,7 +845,7 @@ const CARD_BAR_H = 3
 function cardBarSvg(phase: HelperPhase, color: string, W: number, seat: number): string {
   const id = `hdc${seat}`
   const H = CARD_BAR_H
-  const fill = phase === 'failed' ? BAD : color
+  const fill = phase === 'failed' ? SVG_BAD : color
   const piece = Math.max(30, Math.round(W * 0.35))
   const working = phase === 'working'
   const body = working
@@ -1029,9 +1035,21 @@ export const register: Register = on => {
     return r
   })
 
+  on('turn.start', async ($, e, next) => {
+    if (!e.agentId) {
+      mainTurn = true
+      syncShimmer($)
+    }
+    return next(e)
+  })
+
   on('turn.complete', async ($, e, next) => {
     const r = await next(e)
     const id = e.agentId
+    if (!id) {
+      mainTurn = false
+      syncShimmer($)
+    }
     if (id && !off && helpers.some(hp => hp.id === id)) {
       const failed = e.reason === 'error' || e.reason === 'refusal' || e.isAborted
       void finish($, id, failed ? 'failed' : 'done', e.usage ?? null).catch(err => log($, `turn: ${String(err)}`))
@@ -1086,7 +1104,7 @@ export const register: Register = on => {
       return (
         <Box key={`pet-${hp.id}`} width={petW} flexShrink={0} flexDirection="column">
           {CLAWD[frame]!.map((row, i) => (
-            <Text key={`clawd-${hp.id}-${i}`} color={hue.color}>
+            <Text key={`clawd-${hp.id}-${i}`} color={hue.key}>
               {row}
             </Text>
           ))}
@@ -1115,7 +1133,7 @@ export const register: Register = on => {
       const leadW = Math.max(6, cw - (live ? 2 + pulse.length + 1 : 0))
       const history = (live ? hp.steps.slice(0, -1) : hp.steps).slice(-HISTORY)
       const [b1, b2, b3] = barParts(hp.phase, cw, clk.tick, hp.seat)
-      const barColor = hp.phase === 'failed' ? BAD : hue.color
+      const barColor = hp.phase === 'failed' ? BAD : hue.key
       const rowW = cw - TAG_W
       // About 6.5 CSS pixels a column, as the pet's 48 pixels fill its 8.
       const barPx = Math.max(60, Math.floor(cw * 6.5))
@@ -1127,7 +1145,7 @@ export const register: Register = on => {
           width={width}
           marginBottom={1}
           borderStyle="round"
-          borderColor={hp.phase === 'failed' ? BAD : hue.color}
+          borderColor={hp.phase === 'failed' ? BAD : hue.key}
           borderDimColor={!live}
           paddingX={1}
           gap={0}
@@ -1136,22 +1154,24 @@ export const register: Register = on => {
           <Box flexDirection="column" width={cw}>
             <Box flexDirection="row" justifyContent="space-between" width={cw}>
               <Box width={cw - 2}>
-                <Text bold wrap="truncate-end">
+                <Text weight="bold" wrap="truncate-end">
                   {cut(hp.description, cw - 2)}
                 </Text>
               </Box>
-              <Text bold color={markColor}>{mark}</Text>
+              <Text weight="bold" color={markColor}>{mark}</Text>
             </Box>
             <Box flexDirection="row" justifyContent="space-between" width={cw}>
               <Text dimColor wrap="truncate-end">
                 {cut(who, Math.max(4, cw - meta.length - 1))}
               </Text>
-              <Text dimColor>{meta}</Text>
+              <Text dimColor wrap="truncate-end">
+                {meta}
+              </Text>
             </Box>
             <Box flexDirection="row" width={cw}>
-              {live ? <Text bold color={ACCENT}>{`${spin} `}</Text> : null}
+              {live ? <Text weight="bold" color={ACCENT}>{`${spin} `}</Text> : null}
               <Box width={leadW}>
-                <Text bold={live} color={live ? ACCENT : hp.phase === 'done' ? GOOD : BAD} wrap="truncate-end">
+                <Text weight={live ? 'bold' : undefined} color={live ? ACCENT : hp.phase === 'done' ? GOOD : BAD} wrap="truncate-end">
                   {cut(lead, leadW)}
                 </Text>
               </Box>
@@ -1212,7 +1232,7 @@ export const register: Register = on => {
 
     // A heading per group: a filled bar the full width, its title and count in bold, and an
     // arrow that folds the group.
-    const group = (id: string, title: string, members: Helper[], fill: string, ink: string) => {
+    const group = (id: string, title: string, members: Helper[], fill: ThemeKey, ink: ThemeKey) => {
       if (!members.length) return null
       const folded = view.folded.includes(id)
       const label = `${title} · ${members.length}`
@@ -1221,11 +1241,11 @@ export const register: Register = on => {
         <Box key={`grp-${id}`} flexDirection="column" width={width} marginTop={1}>
           <Box key={`head-${id}`} flexDirection="row" width={width} backgroundColor={fill} paddingX={1} marginBottom={1}>
             <Button key={`group-${id}`} plain onPress={() => undefined}>
-              <Text bold color={ink} backgroundColor={fill}>
+              <Text weight="bold" color={ink} backgroundColor={fill}>
                 {folded ? '▸ ' : '▾ '}
               </Text>
             </Button>
-            <Text bold color={ink} backgroundColor={fill} wrap="truncate-end">
+            <Text weight="bold" color={ink} backgroundColor={fill} wrap="truncate-end">
               {label.padEnd(room)}
             </Text>
           </Box>
@@ -1237,7 +1257,7 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column" width={width}>
         <Box key="header" flexDirection="row" justifyContent="space-between" gap={1} width={width} marginBottom={1}>
-          <Text bold color={running.length ? ACCENT : list.length ? GOOD : undefined}>
+          <Text weight="bold" color={running.length ? ACCENT : list.length ? GOOD : undefined} wrap="truncate-end">
             {list.length ? `${list.length} subagent${list.length === 1 ? '' : 's'} in this chat` : 'No subagents yet'}
           </Text>
           <Button key="hide" label="Hide" dimColor onPress={() => undefined} />
@@ -1249,7 +1269,7 @@ export const register: Register = on => {
                 <Text dimColor wrap="truncate-end">
                   {t.label}
                 </Text>
-                <Text bold color={ACCENT} wrap="truncate-end">
+                <Text weight="bold" color={ACCENT} wrap="truncate-end">
                   {t.value}
                 </Text>
               </Box>
@@ -1257,9 +1277,9 @@ export const register: Register = on => {
           </Box>
         ) : null}
         {list.length ? null : <Text dimColor>Cards show up here when Claude starts a subagent.</Text>}
-        {group('running', 'Running', running, GOOD, '#ffffff')}
+        {group('running', 'Running', running, GOOD, INK)}
         {group('finished', 'Finished', finished, WARN, INK)}
-        {group('stopped', 'Stopped', stopped, BAD, '#ffffff')}
+        {group('stopped', 'Stopped', stopped, BAD, INK)}
       </Box>
     )
   })
@@ -1299,11 +1319,13 @@ export const register: Register = on => {
         {rest as never}
         <Box key="plan-band" flexDirection="column">
           <Box key="plan-row" flexDirection="row" gap={1}>
-            <Text color={P_DEEP}>●</Text>
-            <Text bold wrap="truncate-end">
+            <Text color={PURPLE}>●</Text>
+            <Text weight="bold" wrap="truncate-end">
               {cut(p.title, titleW)}
             </Text>
-            <Text bold color={P_MID}>{label}</Text>
+            <Text weight="bold" color={PURPLE} wrap="truncate-end">
+              {label}
+            </Text>
             <Text dimColor>{pct}</Text>
             <Button key="plan-dismiss" label="✕" plain dimColor role="dismiss" onPress={() => undefined} />
           </Box>
@@ -1315,7 +1337,7 @@ export const register: Register = on => {
           {shown.map((st, k) => {
             const i = from + k
             return st.status === 'in_progress' ? (
-              <Text key={`step-${i}`} bold color={flash ? P_DEEP : P_LIGHT} wrap="truncate-end">
+              <Text key={`step-${i}`} weight="bold" color={PURPLE} dimColor={!flash} wrap="truncate-end">
                 {cut(`▶ ${st.text}`, w)}
               </Text>
             ) : st.status === 'completed' ? (

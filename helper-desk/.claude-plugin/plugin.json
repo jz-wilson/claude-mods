@@ -1,6 +1,6 @@
 {
   "name": "helper-desk",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Helper Desk: every task listed above the prompt, the ones in progress flashing, and a side pane with one live card per subagent",
   "author": {
     "name": "Ben AI",

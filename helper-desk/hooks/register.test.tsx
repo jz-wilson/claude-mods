@@ -1,4 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
+import type { FoundElement } from 'claude-code/testing'
+import type { ThemeKey } from 'claude-code'
 
 /** The `on` a test body is handed. */
 type On = Parameters<NonNullable<Parameters<typeof test>[2]>>[1]
@@ -8,6 +10,24 @@ type Agent = { id: string; description: string; type: string; status: string }
 /** The file `path` names: exact, or a key led by a star that any home can end with. */
 const keyOf = (files: Record<string, string>, path: string) =>
   path in files ? path : Object.keys(files).find(k => k.startsWith('*') && path.endsWith(k.slice(1)))
+
+const WIDTHS = [40, 80, 144] as const
+const THEME_KEYS: readonly ThemeKey[] = [
+  'text', 'inverseText', 'inactive', 'subtle', 'suggestion', 'remember', 'success', 'error',
+  'warning', 'merged', 'claude', 'permission', 'planMode', 'autoAccept', 'promptBorder',
+  'bashBorder', 'ide', 'diffAdded', 'diffRemoved', 'diffAddedDimmed', 'diffRemovedDimmed',
+  'diffAddedWord', 'diffRemovedWord',
+]
+
+/** Functional colour must be a theme key; raw colour belongs to Svg markup only. */
+function rawColors(elements: FoundElement[]): string[] {
+  return elements.flatMap(element =>
+    ['color', 'borderColor', 'backgroundColor']
+      .map(prop => [prop, element.props[prop]] as const)
+      .filter(([, value]) => value !== undefined && !THEME_KEYS.includes(value as ThemeKey))
+      .map(([prop, value]) => `${element.type}.${prop}=${String(value)}`),
+  )
+}
 
 /** Each tool spec the mod registered, newest test only. */
 let specs: { isDeferred?: boolean }[] = []
@@ -60,6 +80,7 @@ function rig(on: On, files: Record<string, string>) {
     const { Box } = $.ui.resolve(e)
     return (<Box />) as never
   })
+  on('turn.start', async (_, e) => ({ turnId: (e as { turnId: string }).turnId }) as never)
   on('turn.complete', async () => ({ text: '' }) as never)
   on('fs.exists', async ($, e) => ({ value: keyOf(files, (e as { path: string }).path.replace(/\\/g, '/')) !== undefined }) as never)
   on('fs.read', async ($, e) => ({ value: files[keyOf(files, (e as { path: string }).path.replace(/\\/g, '/')) ?? ''] ?? '' }) as never)
@@ -123,7 +144,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await v.find({ text: /Gmail: search threads/ }), 'Gmail connector in words').toBeDefined()
     expect(await v.find({ type: 'Text', text: /^Running · 2\s*$/ }), 'Running heading with its count').toBeDefined()
     const runHead = await v.find({ key: 'head-running' })
-    expect(runHead?.props.backgroundColor, 'Running sits in a green box').toBe('#16a34a')
+    expect(runHead?.props.backgroundColor, 'Running sits in a green box').toBe('success')
     expect(await v.find({ text: /Explore · Haiku/ }), 'type and model').toBeDefined()
     expect(await v.find({ text: /^Time$/ }), 'time tile').toBeDefined()
     expect(await v.find({ type: 'Text', text: /^Total chat cost$/ }), 'Total chat cost label').toBeDefined()
@@ -135,7 +156,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await $.turn.complete({ answer: 'Found it.', agentId: 'agent-a1', reason: 'answer', durationMs: 4000, isAborted: false, turnId: 't1', usage } as never)
     await clock.settle()
     expect(await v.find({ type: 'Text', text: /^Finished · 1\s*$/ }), 'Finished heading with its count').toBeDefined()
-    expect((await v.find({ key: 'head-finished' }))?.props.backgroundColor, 'Finished sits in a yellow box').toBe('#eab308')
+    expect((await v.find({ key: 'head-finished' }))?.props.backgroundColor, 'Finished sits in a yellow box').toBe('warning')
     expect(await v.find({ text: /^Subagent tokens$/ }), 'subagent tokens tile from usage').toBeDefined()
     expect(await v.find({ text: /34k tokens/ }), 'card tokens').toBeDefined()
     expect(statuses[statuses.length - 1], 'still no footer status').toBeUndefined()
@@ -401,10 +422,16 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await v.find({ type: 'Text', text: /^✓ Read the brief$/ }), 'done step').toBeDefined()
     expect(await v.find({ type: 'Text', text: /^✓ Draft the outline$/ }), 'done step').toBeDefined()
     expect(await v.find({ type: 'Text', text: /^○ Check the deck$/ }), 'pending step').toBeDefined()
-    const live1 = String((await v.find({ type: 'Text', text: /^▶ Build the slides$/ }))!.props.color)
+    const flashOf = async () => String((await v.find({ type: 'Text', text: /^▶ Build the slides$/ }))!.props.dimColor)
+    // Idle: no turn is running, so the flash holds still.
+    const idle1 = await flashOf()
+    await clock.advance(1_000)
+    expect(await flashOf(), 'idle: the step in progress holds still').toBe(idle1)
+    await $.turn.start({ turnId: 'm1', text: 'go' } as never)
+    const live1 = await flashOf()
     await clock.advance(360)
-    const live2 = String((await v.find({ type: 'Text', text: /^▶ Build the slides$/ }))!.props.color)
-    expect(live1 !== live2, 'the step in progress flashes').toBe(true)
+    const live2 = await flashOf()
+    expect(live1 !== live2, 'the step in progress flashes during a main turn').toBe(true)
     expect(await v.find({ text: /^█$/ }), 'no progress bar').toBeUndefined()
     // A row budget smaller than the list shows a window from just before the step in progress.
     const tight = await $.ui.mount({ plugin: 'helper-desk', surface, component: 'AbovePrompt', props: { ...(bandProps(80) as object), maxRows: 4 } as never })
@@ -500,6 +527,72 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(String(said.result), 'the tool says it is off').toContain('off')
   })
 }
+
+test('the flash follows the main turn only', { timeoutMs: 30000 }, async ($, on) => {
+  const { clock } = rig(on, {})
+  await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface: 'terminal', isInteractive: true } as never)
+  const callTool = $.tool.call as unknown as (input: unknown) => Promise<unknown>
+  await callTool({ tool: 'mcp__helper-desk__plan', tool_use_id: 'p1', title: 'Make the deck', steps: steps4(2, true) })
+  await clock.settle()
+  const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'AbovePrompt', props: bandProps(80) })
+  const seen = async () => {
+    const out = new Set<string>()
+    for (let i = 0; i < 4; i += 1) {
+      out.add(String((await v.find({ type: 'Text', text: /^▶ Build the slides$/ }))!.props.dimColor))
+      await clock.advance(350)
+    }
+    return out.size
+  }
+  expect(await seen(), 'idle: one static frame').toBe(1)
+  // A subagent's turn is not the main loop's.
+  const done = { answer: '', durationMs: 5, isAborted: false, reason: 'answer' }
+  await $.turn.start({ turnId: 's1', text: 'sub', agentId: 'agent-x' } as never)
+  expect(await seen(), 'subagent turn: still static').toBe(1)
+  await $.turn.start({ turnId: 't1', text: 'go' } as never)
+  expect(await seen(), 'main turn: flashes').toBe(2)
+  await $.turn.complete({ ...done, turnId: 's1', agentId: 'agent-x' } as never)
+  expect(await seen(), 'subagent done mid-turn: keeps flashing').toBe(2)
+  await $.turn.complete({ ...done, turnId: 't1' } as never)
+  expect(await seen(), 'main turn over: static again').toBe(1)
+})
+
+test('the pane and band fit 40, 80 and 144 columns on every surface, with theme colours only', { timeoutMs: 30000 }, async ($, on) => {
+  const { clock } = rig(on, {})
+  await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface: 'terminal', isInteractive: true } as never)
+  const callTool = $.tool.call as unknown as (input: unknown) => Promise<unknown>
+  await $.agent.spawn({ tool_use_id: 's1', prompt: 'x', description: 'Build the landing page with a long description', subagentType: 'general-purpose' } as never)
+  await $.agent.spawn({ tool_use_id: 's2', prompt: 'x', description: 'Design the graphics', subagentType: 'general-purpose' } as never)
+  await callTool({ tool: 'Read', tool_use_id: 'c1', file_path: '/Users/test/vault/research.md', agentId: 'agent-a1' })
+  await callTool({ tool: 'mcp__helper-desk__plan', tool_use_id: 'p1', title: 'A plan with a fairly long title', steps: steps4(1, true) })
+  await clock.settle()
+  const tooWide = (els: FoundElement[], width: number) =>
+    els.filter(el => el.type === 'Box' && typeof el.props.width === 'number' && el.props.width > Math.max(32, width)).map(el => String(el.props.width))
+  for (const surface of ['terminal', 'desktop'] as const) {
+    for (const width of WIDTHS) {
+      const pane = await $.ui.mount({ plugin: 'helper-desk', surface, component: 'Pane', requestId: 'helpers', props: props(width) })
+      const paneEls = await pane.findAll({})
+      expect(rawColors(paneEls), `pane ${surface} ${width}: raw colours`).toEqual([])
+      expect(tooWide(paneEls, width), `pane ${surface} ${width}: nothing wider than the body`).toEqual([])
+      await pane.unmount()
+      const band = await $.ui.mount({ plugin: 'helper-desk', surface, component: 'AbovePrompt', props: bandProps(width) })
+      expect(rawColors(await band.findAll({})), `band ${surface} ${width}: raw colours`).toEqual([])
+      expect(await band.find({ key: 'plan-band' }), `band ${surface} ${width}: drawn`).toBeDefined()
+      await band.unmount()
+    }
+  }
+})
+
+test('the band yields to a survey', { timeoutMs: 30000 }, async ($, on) => {
+  const { clock } = rig(on, {})
+  await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface: 'terminal', isInteractive: true } as never)
+  const callTool = $.tool.call as unknown as (input: unknown) => Promise<unknown>
+  await callTool({ tool: 'mcp__helper-desk__plan', tool_use_id: 'p1', steps: steps4(1, true) })
+  await clock.settle()
+  const survey = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'AbovePrompt', props: { ...(bandProps(80) as object), hasSurvey: true } as never })
+  expect(await survey.find({ key: 'plan-band' }), 'survey: no band').toBeUndefined()
+  const shown = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'AbovePrompt', props: bandProps(80) })
+  expect(await shown.find({ key: 'plan-band' }), 'no survey: band').toBeDefined()
+})
 
 test('the plan tool sits in front, and work without a plan gets one nudge', { timeoutMs: 30000 }, async ($, on) => {
   specs = []
