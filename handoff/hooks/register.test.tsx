@@ -1,4 +1,25 @@
 import { expect, mock, test } from 'claude-code/testing'
+import type { FoundElement } from 'claude-code/testing'
+import type { ThemeKey } from 'claude-code'
+
+import { barColumns, labelColumns } from './register'
+
+const THEME_KEYS: readonly ThemeKey[] = [
+  'text', 'inverseText', 'inactive', 'subtle', 'suggestion', 'remember', 'success', 'error',
+  'warning', 'merged', 'claude', 'permission', 'planMode', 'autoAccept', 'promptBorder',
+  'bashBorder', 'ide', 'diffAdded', 'diffRemoved', 'diffAddedDimmed', 'diffRemovedDimmed',
+  'diffAddedWord', 'diffRemovedWord',
+]
+
+// Functional color must be a theme key; this mod draws no Raster or Svg, so any raw color is a bug.
+function rawColors(elements: FoundElement[]): string[] {
+  return elements.flatMap(element =>
+    ['color', 'borderColor', 'backgroundColor']
+      .map(prop => [prop, element.props[prop]] as const)
+      .filter(([, value]) => value !== undefined && !THEME_KEYS.includes(value as ThemeKey))
+      .map(([prop, value]) => `${element.type}.${prop}=${String(value)}`),
+  )
+}
 
 const HANDOFF = '# Handoff: Build the refresh mod\n\nContinue work in `~/vault`. Goal: finish it.\n\n## Next steps\n1. Test it.'
 
@@ -410,5 +431,70 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(JSON.parse(files[SW] ?? '{}'), '/refresh clears the flag').toEqual({})
     v = await $.ui.mount({ plugin: 'handoff', surface, component: 'AbovePrompt', props: offerProps })
     expect(await v.find({ key: 'refresh' }), '/refresh shows the panel').toBeDefined()
+  })
+}
+
+for (const surface of ['desktop', 'terminal'] as const) {
+  test(`offer, steps and result fit 40, 80 and 144 columns with theme colors only (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const files: Record<string, string> = {}
+    on('session.start', async ($, e) => ({ cwd: e.cwd }) as never)
+    on('command.register', async () => ({ value: undefined }) as never)
+    on('tool.register', async () => ({ value: { tool: 'mcp__handoff__refresh' } }) as never)
+    const clock = mock.clock(on, { now: 1_000_000 })
+    on('session.id', async () => ({ value: 'sid' }) as never)
+    on('session.cwd', async () => ({ value: '/Users/test/vault' }) as never)
+    on('session.usage', async () => ({ value: { context: { tokens: 262_000, window: 1_000_000 } } }) as never)
+    on('session.messages', async () => ({ value: [{ role: 'user', text: 'Build it', toolUses: [] }] }) as never)
+    on('model.fork', async () => ({ value: { isAnswered: true, text: '# Handoff: Fit widths\n\nBody.', usage: {} } }) as never)
+    on('fs.exists', async ($, e) => ({ value: (e as { path: string }).path.replace(/\\/g, '/') in files }) as never)
+    on('fs.write', async ($, e) => {
+      const { path, text } = e as { path: string; text: string }
+      files[path.replace(/\\/g, '/')] = text
+      return { value: undefined } as never
+    })
+    on('fs.read', async ($, e) => ({ value: files[(e as { path: string }).path.replace(/\\/g, '/')] ?? '' }) as never)
+    on('env.get', async () => ({ value: 'Windows_NT' }) as never)
+    on('process.run', async () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }) as never)
+    on('store.get', async () => ({ value: undefined }) as never)
+    on('store.set', async () => ({ value: undefined }) as never)
+    on('turn.complete', async () => ({ text: '' }) as never)
+    on('ui.render', { component: 'AbovePrompt' }, async ($, e) => {
+      const { Text } = $.ui.resolve(e)
+      return <Text>REST</Text>
+    })
+    const at = (bodyColumns: number) => ({ isWorking: false, hasSurvey: false, maxRows: 10, bodyColumns }) as never
+    const mount = (width: number) => $.ui.mount({ plugin: 'handoff', surface, component: 'AbovePrompt', props: at(width) })
+    await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface, isInteractive: true } as never)
+    await $.turn.complete({ answer: '' } as never)
+    await clock.settle()
+
+    const barOf = async (v: Awaited<ReturnType<typeof mount>>) =>
+      (await v.findAll({ type: 'Text' })).reduce((n, t) => (/^━+$/.test(t.text ?? '') ? Math.max(n, t.text!.length) : n), 0)
+
+    for (const width of [40, 80, 144]) {
+      const v = await mount(width)
+      expect(await v.find({ key: 'refresh' }), `offer at ${width}`).toBeDefined()
+      expect(rawColors(await v.findAll({})), `offer colors at ${width}`).toEqual([])
+      await v.unmount()
+    }
+    let v = await mount(144)
+    await v.press({ key: 'refresh' })
+    for (const width of [40, 80, 144]) {
+      v = await mount(width)
+      const row = await v.find({ key: 'row0' })
+      expect(row, `steps at ${width}`).toBeDefined()
+      expect(rawColors(await v.findAll({})), `step colors at ${width}`).toEqual([])
+      expect((await v.findAll({ type: 'Box' })).some(b => b.props.width === labelColumns(width)), `label width at ${width}`).toBe(true)
+      expect(await barOf(v), `bars at ${width}`).toBe(barColumns(width))
+      await v.unmount()
+    }
+    await clock.advance(10_000)
+    for (const width of [40, 80, 144]) {
+      v = await mount(width)
+      expect(await v.find({ key: 'copy' }), `result at ${width}`).toBeDefined()
+      expect(rawColors(await v.findAll({})), `result colors at ${width}`).toEqual([])
+      await v.unmount()
+    }
+    expect([barColumns(40), barColumns(80), barColumns(144)]).toEqual([0, 18, 18])
   })
 }

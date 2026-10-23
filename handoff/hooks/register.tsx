@@ -17,9 +17,9 @@ const MIN_STEP_MS = 650
 const WRITE_SCALE_MS = 40_000
 const BAR = 18
 
-const ACCENT = '#d97757'
-const GOOD = '#16a34a'
-const BAD = '#dc2626'
+const ACCENT = 'claude'
+const GOOD = 'success'
+const BAD = 'error'
 const SPIN = ['◐', '◓', '◑', '◒']
 
 const LABELS = [
@@ -594,10 +594,14 @@ async function close($: EngineInterface) {
   await setPanel($, null)
 }
 
-function bar(progress: number, status: Step['status']) {
-  const filled = Math.round(Math.max(0, Math.min(1, progress)) * BAR)
+// Fixed parts of a step row, sized from the body columns: the bar goes first, then the label narrows.
+export const barColumns = (bodyColumns: number) => (bodyColumns >= 80 ? BAR : bodyColumns >= 60 ? 8 : 0)
+export const labelColumns = (bodyColumns: number) => (bodyColumns >= 80 ? 32 : bodyColumns >= 60 ? 26 : 22)
+
+function bar(progress: number, status: Step['status'], columns: number) {
+  const filled = Math.round(Math.max(0, Math.min(1, progress)) * columns)
   const color = status === 'fail' ? BAD : status === 'done' ? GOOD : ACCENT
-  return { on: '━'.repeat(filled), off: '━'.repeat(BAR - filled), color }
+  return { on: '━'.repeat(filled), off: '━'.repeat(columns - filled), color }
 }
 
 export const register: Register = on => {
@@ -736,13 +740,15 @@ export const register: Register = on => {
     const rest = await next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
     const noop = () => undefined
+    const barCols = barColumns(e.props.bodyColumns)
+    const labelCols = labelColumns(e.props.bodyColumns)
 
     if (p.phase === 'offer') {
       return (
         <Box flexDirection="column">
           {rest}
           <Box flexDirection="row" alignItems="center" justifyContent="space-between" gap={1}>
-            <Text>
+            <Text wrap="truncate-end">
               <Text color={ACCENT}>●</Text>
               <Text dimColor> Context at {short(p.tokens)}. Refresh moves this work to a new chat with a full handoff.</Text>
               {focus ? <Text color={ACCENT}> Focus: {focus}</Text> : null}
@@ -773,19 +779,21 @@ export const register: Register = on => {
         ) : (
           <Text dimColor>○</Text>
         )
-      const b = bar(s.progress, s.status)
+      const b = bar(s.progress, s.status, barCols)
       return (
         <Box key={`row${i}`} flexDirection="row" gap={1}>
           <Box width={2}>{icon}</Box>
-          <Box width={32}>
+          <Box width={labelCols}>
             <Text dimColor={s.status === 'wait'} wrap="truncate-end">
               {i + 1}. {s.label}
             </Text>
           </Box>
-          <Text>
-            <Text color={b.color}>{b.on}</Text>
-            <Text dimColor>{b.off}</Text>
-          </Text>
+          {barCols > 0 ? (
+            <Text>
+              <Text color={b.color}>{b.on}</Text>
+              <Text dimColor>{b.off}</Text>
+            </Text>
+          ) : null}
           <Text dimColor wrap="truncate-end">
             {s.detail}
           </Text>
@@ -797,7 +805,7 @@ export const register: Register = on => {
       <Box flexDirection="column">
         {rest}
         <Box flexDirection="column" gap={0} paddingY={0}>
-          <Text bold color={p.phase === 'failed' ? BAD : p.phase === 'ready' ? GOOD : ACCENT}>
+          <Text weight="bold" wrap="truncate-end" color={p.phase === 'failed' ? BAD : p.phase === 'ready' ? GOOD : ACCENT}>
             {title}
           </Text>
           {rows}
@@ -806,7 +814,7 @@ export const register: Register = on => {
               <Text dimColor wrap="truncate-middle">
                 Saved to {p.file}
               </Text>
-              <Box flexDirection="row" gap={1}>
+              <Box flexDirection="row" flexWrap="wrap" gap={1}>
                 <Button key="copy" label="Copy handoff prompt" variant="primary" onPress={noop} />
                 <Button key="start" label="Start new chat with it" variant="secondary" onPress={noop} />
                 <Button key="open" label="Open file" onPress={noop} />
@@ -822,7 +830,7 @@ export const register: Register = on => {
                   Draft saved to {p.file}
                 </Text>
               ) : null}
-              <Box flexDirection="row" gap={1}>
+              <Box flexDirection="row" flexWrap="wrap" gap={1}>
                 <Button key="retry" label="Try again" variant="primary" onPress={noop} />
                 {p.file ? <Button key="copy" label="Copy draft" onPress={noop} /> : null}
                 {p.file ? <Button key="open" label="Open draft" onPress={noop} /> : null}
