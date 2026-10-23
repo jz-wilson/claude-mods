@@ -20,6 +20,8 @@ export type Helper = {
   type: string
   /** The Agent tool's `name` input, empty when none was given. */
   name: string
+  /** The effort the Agent call asked for (low, medium, high, xhigh, max); medium when it named none. Sets the leg pace. */
+  level: string
   /** Peers this helper sent a message to and heard from, newest last, at most 3 each. A peer is a helper id or "main". */
   sentTo: string[]
   heardFrom: string[]

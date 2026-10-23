@@ -25,17 +25,8 @@ const SWITCH_MS = 3000
 const HISTORY = 3
 const MAX_STEPS = 200
 const TAG_W = 11
-// Columns the pet takes beside a card; the Svg is 48 by 36 CSS pixels.
-const PET_W = 8
-const PET_PX_W = 48
-const PET_PX_H = 36
-// The terminal pet is a Raster of half-block cells drawn from the same pixel grid as the Svg pet:
-// wide (18 by 7 cells) from this body width up, else half that size.
+// Sprites draw at full size from this body width up, and at half size below it, on the terminal and the Svg alike.
 const PET_WIDE_FROM = 80
-const PET_COLS_WIDE = 18
-const PET_ROWS_WIDE = 7
-const PET_COLS_SMALL = 9
-const PET_ROWS_SMALL = 4
 // One cell of gap between the pet and the card text.
 const PET_GAP = 1
 // One timer repaints every running terminal pet.
@@ -60,6 +51,9 @@ const SVG_BAD = '#dc2626'
 // Quarter circles read clearly on desktop fonts and in the terminal.
 const SPIN = ['◐', '◓', '◑', '◒']
 const PULSE = ['●∙∙', '∙●∙', '∙∙●', '∙●∙']
+
+// The badge letter by model.
+const TIER_KEY: Record<'haiku' | 'sonnet' | 'opus', ThemeKey> = { haiku: 'success', sonnet: 'suggestion', opus: 'claude' }
 
 const KIND_COLOR: Record<StepKind, ThemeKey> = {
   Command: 'warning',
@@ -91,70 +85,252 @@ const HUES: { name: string; color: string; key: ThemeKey }[] = [
 ]
 const hueOf = (hue: number) => HUES[((hue % HUES.length) + HUES.length) % HUES.length]!
 
+// ---------- Sprites: the model crabs and Jev's cube-bot, ported from the approved mock ----------
+
 // Eyes and outline are the same on every pet.
 const EYE = '#2b1d16'
-const OUTLINE = '#2b1d16'
+const INK_HEX = '#2b1d16'
 
-const span = (y: number, from: number, to: number): Px[] => Array.from({ length: to - from + 1 }, (_, i) => [from + i, y] as Px)
+type Tier = 'haiku' | 'sonnet' | 'opus'
+type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
-// The crab on a 16 by 12 grid, in layers so a pose picks which show. It stands one pixel down;
-// the bob lifts the whole of it by one.
-const CORE: Px[] = [1, 2, 3, 4, 5, 6, 7].flatMap(y => span(y, 3, 12))
-const ARMS_DOWN: Px[] = [...span(4, 1, 2), ...span(5, 1, 2), ...span(4, 13, 14), ...span(5, 13, 14)]
-const ARMS_UP: Px[] = [[1, 2], [2, 2], [1, 3], [2, 3], [13, 2], [14, 2], [13, 3], [14, 3]]
-// The four phases of the leg shuffle: each leg pair steps in and out in turn.
-const LEG_X = [[4, 6, 9, 11], [3, 6, 10, 11], [3, 5, 10, 12], [4, 5, 9, 12]]
-const legPixels = (phase: number): Px[] => LEG_X[phase % 4]!.flatMap(x => [[x, 8], [x, 9]] as Px[])
-const EYES_LOW: Px[] = [[5, 4], [10, 4]]
-const EYES_TOP: Px[] = [[5, 3], [10, 3]]
-
-// The drawing grid: the crab at an offset of (1, 2), so its outline and its hop fit.
-const GRID_W = 18
-const GRID_H = 14
-
+// The crab's grid, and the shell by model: size tells the model.
+const GRID_W = 24
+const GRID_H = 18
+const SHELL: Record<Tier, { w: number; h: number }> = { haiku: { w: 8, h: 5 }, sonnet: { w: 10, h: 7 }, opus: { w: 12, h: 8 } }
+// One leg step in ms by effort; the four steps of the shuffle make the period.
+const LEG_MS: Record<Effort, number> = { low: 200, medium: 140, high: 110, xhigh: 90, max: 75 }
+const DOTS: Record<Effort, number> = { low: 1, medium: 2, high: 3, xhigh: 4, max: 5 }
+const EFFORTS = Object.keys(LEG_MS) as Effort[]
+const DELTA = [[0, 0, 0, 0], [-1, 0, 1, 0], [-1, -1, 1, 1], [0, -1, 0, 1]]
 const BOB_MS = 1400
-const LEG_MS = 120
 const CLAW_MS = 2300
 const BLINK_MS = 3300
 const BLINK_HOLD_MS = 150
+const STEAM_MS = 900
 // Each pet starts this much later than the one before it in HUES order, so crabs don't move in lockstep.
 const PHASE_MS = 370
 
-const phaseOf = (hue: number) => (((hue % HUES.length) + HUES.length) % HUES.length) * PHASE_MS
 const wrap = (n: number, m: number) => ((n % m) + m) % m
+const phaseOf = (hue: number) => (((hue % HUES.length) + HUES.length) % HUES.length) * PHASE_MS
 
-type Pose = { legs: number; up: boolean; blink: boolean; hop: number }
-const STILL: Pose = { legs: 0, up: false, blink: false, hop: 0 }
+/** The model family of a display name ("Opus 5.5"); a model that is not known draws as sonnet. */
+export function tierOf(model: string): Tier {
+  const m = /(opus|sonnet|haiku)/i.exec(model)
+  return m ? (m[1]!.toLowerCase() as Tier) : 'sonnet'
+}
+const effortOf = (v: unknown): Effort => (EFFORTS.includes(v as Effort) ? (v as Effort) : 'medium')
+const dotsOf = (e: Effort) => '●'.repeat(DOTS[e]) + '○'.repeat(5 - DOTS[e])
 
-/** The pose at `t` ms: an eased sine bob, a four-phase leg shuffle, claws on their own period, a blink now and then. */
-function poseAt(t: number, hue: number): Pose {
-  const u = t + phaseOf(hue)
+function shade(hex: string, k: number) {
+  const n = Number.parseInt(hex.slice(1), 16)
+  const ch = (s: number) => {
+    const v = (n >> s) & 255
+    return Math.round(k < 0 ? v * (1 + k) : v + (255 - v) * k)
+  }
+  return `#${[16, 8, 0].map(s => ch(s).toString(16).padStart(2, '0')).join('')}`
+}
+
+/** A sprite: "x,y" to a colour code, the code's colour, and which codes win when a canvas is scaled down (first wins). */
+type Sprite = { px: Map<string, string>; colors: Record<string, string>; order: string }
+type Placed = { sprite: Sprite; ox: number; oy: number }
+
+type Pose = { u: number; legs: number; up: boolean; blink: boolean; hop: number }
+const STILL: Pose = { u: 0, legs: 0, up: false, blink: false, hop: 0 }
+
+/** The pose at `t` ms: an eased sine bob, a four-phase leg shuffle at the effort's pace, claws on their own period, a blink now and then. */
+export function poseAt(t: number, phase: number, effort: Effort): Pose {
+  const u = t + phase
+  const leg = LEG_MS[effort]
   const wave = 0.5 - 0.5 * Math.cos((2 * Math.PI * u) / BOB_MS)
-  const eased = wave * wave * (3 - 2 * wave)
   const f = wrap(u, CLAW_MS) / CLAW_MS
   return {
-    legs: Math.floor(wrap(u, LEG_MS * 4) / LEG_MS),
+    u,
+    legs: Math.floor(wrap(u, leg * 4) / leg),
     up: f < 0.1 || (f > 0.18 && f < 0.28),
     blink: wrap(u, BLINK_MS) < BLINK_HOLD_MS,
-    hop: Math.round(eased),
+    hop: Math.round(wave * wave * (3 - 2 * wave)),
   }
 }
 
-/** What each pixel of the grid holds for a pose: 1 outline, 2 body, 3 eye, 0 clear. */
-function paint(pose: Pose): Uint8Array {
-  const grid = new Uint8Array(GRID_W * GRID_H)
-  const body: Px[] = [...CORE, ...(pose.up ? ARMS_UP : ARMS_DOWN), ...legPixels(pose.legs)]
-  const at = (x: number, y: number) => (y + 2 - pose.hop) * GRID_W + x + 1
-  for (const [x, y] of body) grid[at(x, y)] = 2
-  for (const [x, y] of body) {
-    for (const i of [at(x + 1, y), at(x - 1, y), at(x, y + 1), at(x, y - 1)]) if (i >= 0 && i < grid.length && !grid[i]) grid[i] = 1
-  }
-  for (const [x, y] of [...EYES_LOW, ...(pose.blink ? [] : EYES_TOP)]) grid[at(x, y)] = 3
-  return grid
+type PxMap = Map<string, string>
+type CrabParts = { shell: PxMap; arms: PxMap; legs: PxMap; props: PxMap; armProps: PxMap }
+const crabGeo = (tier: Tier) => {
+  const { w, h } = SHELL[tier]
+  const x0 = (GRID_W - w) >> 1
+  return { w, h, x0, top: 14 - h, cx: x0 + (w >> 1) }
 }
 
-const BASE64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+/** The crab's pieces for one pose, `dy` rows down; the Svg pet and the Raster pet both draw from these. */
+function crabParts(tier: Tier, up: boolean, legs: number, dy: number): CrabParts {
+  const { w, x0, top, cx } = crabGeo(tier)
+  const out: CrabParts = { shell: new Map(), arms: new Map(), legs: new Map(), props: new Map(), armProps: new Map() }
+  const set = (m: PxMap, x: number, y: number, c: string) => {
+    const yy = y + dy
+    if (x >= 0 && x < GRID_W && yy >= 0 && yy < GRID_H) m.set(`${x},${yy}`, c)
+  }
+  for (let y = top; y <= 13; y += 1) for (let x = x0; x < x0 + w; x += 1) set(out.shell, x, y, 'B')
+  if (tier === 'sonnet') for (let x = x0 + 1; x < x0 + w - 1; x += 1) set(out.shell, x, 11, 'D')
+  if (tier === 'opus') {
+    for (let x = x0; x < x0 + w; x += 1) set(out.shell, x, 13, 'D')
+    for (const [x, y] of [[x0 + 3, top + 5], [x0 + w - 4, top + 5], [cx, top + 4]] as const) set(out.shell, x, y, 'L')
+  }
+  const armY = up ? top : top + 2
+  for (const ax of [x0 - 2, x0 - 1, x0 + w, x0 + w + 1]) {
+    set(out.arms, ax, armY, 'B')
+    set(out.arms, ax, armY + 1, 'B')
+  }
+  const step = DELTA[legs % 4]!
+  ;[x0 + 1, x0 + 3, x0 + w - 4, x0 + w - 2].forEach((bx, i) => {
+    set(out.legs, bx + step[i]!, 14, 'B')
+    set(out.legs, bx + step[i]!, 15, 'B')
+  })
+  if (tier === 'haiku') {
+    set(out.props, cx, top - 1, 'g')
+    set(out.props, cx, top - 2, 'g')
+    for (const [x, y] of [[cx - 1, top - 2], [cx - 2, top - 3], [cx + 1, top - 3]] as const) set(out.props, x, y, 'G')
+  }
+  if (tier === 'sonnet') {
+    const ax = x0 + w + 1
+    set(out.armProps, ax + 1, armY - 1, 'N')
+    for (const [x, y] of [[ax + 2, armY - 2], [ax + 3, armY - 3], [ax + 4, armY - 4], [ax + 2, armY - 3], [ax + 3, armY - 4]] as const) set(out.armProps, x, y, 'Q')
+  }
+  if (tier === 'opus') {
+    for (let x = x0 + 3; x <= x0 + w - 4; x += 1) set(out.props, x, top - 1, 'C')
+    for (const x of [x0 + 3, cx - 1, cx, x0 + w - 4]) set(out.props, x, top - 2, 'C')
+  }
+  return out
+}
+
+// Codes: B body, D shade, L spot, E eye, G leaf, g stem, Q quill, N nib, C crown, S steam, O outline.
+const crabColors = (body: string): Record<string, string> => ({
+  B: body, D: shade(body, -0.32), L: shade(body, 0.45), E: EYE, O: INK_HEX, G: '#4ade80', g: '#15803d', Q: '#f5efe0', N: INK_HEX, C: '#f2c230', S: '#b8c2cf',
+})
+const CRAB_ORDER = 'ENCQGgLDBSO'
+const steamAt = (tier: Tier, k: number): [number, number][] => {
+  const { x0, top } = crabGeo(tier)
+  return [[x0 - 1, top - 1 - k], [x0 - 2, top - 2 - k], [x0, top - 3 - k]]
+}
+const eyeXs = (tier: Tier) => {
+  const { x0, w } = crabGeo(tier)
+  return [x0 + 2, x0 + w - 3]
+}
+
+/** One crab, as the mock draws it. `still` is the standing pose with no steam. */
+export function crabSprite(tier: Tier, t: number, o: { effort?: Effort; still?: boolean; phase?: number; body?: string } = {}): Sprite {
+  const effort = o.effort ?? 'medium'
+  const p = o.still ? STILL : poseAt(t, o.phase ?? 0, effort)
+  const parts = crabParts(tier, p.up, p.legs, -p.hop)
+  const px: PxMap = new Map([...parts.shell, ...parts.arms, ...parts.legs, ...parts.props, ...parts.armProps])
+  for (const k of [...px.keys()]) {
+    const [x, y] = k.split(',').map(Number) as [number, number]
+    for (const [a, b] of [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]] as const) {
+      if (a >= 0 && a < GRID_W && b >= 0 && b < GRID_H && !px.has(`${a},${b}`)) px.set(`${a},${b}`, 'O')
+    }
+  }
+  const { top } = crabGeo(tier)
+  for (const ex of eyeXs(tier)) {
+    px.set(`${ex},${top + 3 - p.hop}`, 'E')
+    if (!p.blink) px.set(`${ex},${top + 2 - p.hop}`, 'E')
+  }
+  if (!o.still && (effort === 'xhigh' || effort === 'max')) {
+    const k = Math.floor(wrap(p.u, STEAM_MS) / 300)
+    for (const [x, y] of steamAt(tier, k)) if (y >= 0 && !px.has(`${x},${y}`)) px.set(`${x},${y}`, 'S')
+  }
+  return { px, colors: crabColors(o.body ?? '#2563eb'), order: CRAB_ORDER }
+}
+
+// Jev on a 14 by 16 grid, built from runs so every row is exactly 14 wide.
+const JEV_H = 16
+const RUNS: [string, number][][] = [
+  [['.', 6], ['o', 2], ['.', 6]], [['.', 4], ['o', 2], ['t', 2], ['o', 2], ['.', 4]], [['.', 2], ['o', 2], ['t', 6], ['o', 2], ['.', 2]],
+  [['o', 2], ['t', 10], ['o', 2]], [['o', 1], ['l', 2], ['t', 8], ['r', 2], ['o', 1]], [['o', 1], ['l', 4], ['t', 4], ['r', 4], ['o', 1]],
+  ...Array.from({ length: 5 }, (): [string, number][] => [['o', 1], ['l', 5], ['o', 2], ['r', 5], ['o', 1]]),
+  [['o', 2], ['l', 4], ['o', 2], ['r', 4], ['o', 2]], [['.', 2], ['o', 2], ['l', 2], ['o', 2], ['r', 2], ['o', 2], ['.', 2]], [['.', 4], ['o', 6], ['.', 4]],
+]
+const CUBE = RUNS.map(r => r.map(([c, n]) => c.repeat(n)).join(''))
+// The bars on the cube's right face: one for haiku, two for sonnet, three for opus.
+const BARS: [number, number[]][] = [[8, [10]], [10, [9, 10]], [12, [8, 9, 10]]]
+const FACES = { t: '#f7a8df', l: '#e052c0', r: '#a8338e' }
+const TIERS: Tier[] = ['haiku', 'sonnet', 'opus']
+const JEV_ORDER = 'ekfbtlro'
+// The canvas by what is drawn: Jev alone, or Jev with the judge crab beside it.
+const JEV_CANVAS_W = 20
+const JEV_JUDGE_W = 32
+const CANVAS_H = 18
+type JevState = 'asking' | 'answered' | 'judging' | 'judged'
+type Face = 't' | 'l' | 'r'
+const ROTATIONS: Face[][] = [['t', 'l', 'r'], ['l', 'r', 't'], ['r', 't', 'l']]
+
+type JevParts = { top: PxMap; rest: PxMap; bars: PxMap; eyesLow: PxMap; eyesTop: PxMap; legs: PxMap }
+
+/** Jev's pieces: `dy` rows down, the top rows shifted `tilt` columns, `bars` lit, and leg pair `legLift` (or none, -1) raised. */
+function jevParts(bars: number, dy: number, tilt: number, legLift: number): JevParts {
+  const out: JevParts = { top: new Map(), rest: new Map(), bars: new Map(), eyesLow: new Map(), eyesTop: new Map(), legs: new Map() }
+  CUBE.forEach((row, y) => [...row].forEach((c, x) => {
+    if (c === '.') return
+    ;(y <= 5 ? out.top : out.rest).set(`${x + (y <= 5 ? tilt : 0)},${y + dy + 1}`, c)
+  }))
+  BARS.forEach(([x, ys], i) => ys.forEach(y => out.bars.set(`${x},${y + dy + 1}`, i < bars ? 'k' : 'b')))
+  for (const ex of [2, 4]) {
+    out.eyesLow.set(`${ex},${9 + dy}`, 'e')
+    out.eyesTop.set(`${ex},${8 + dy}`, 'e')
+  }
+  ;[[3, 4], [9, 10]].forEach(([a, b], i) => {
+    for (const x of [a!, b!]) {
+      out.legs.set(`${x},${14 + dy + 1}`, 'f')
+      if (legLift !== i) out.legs.set(`${x},${15 + dy + 1 > JEV_H - 1 ? JEV_H - 1 : 15 + dy + 1}`, 'f')
+    }
+  })
+  return out
+}
+
+/** The codes' colours: the three faces by rotation, the dim bars from the right face. */
+const jevColors = (rot: Face[]): Record<string, string> => {
+  const faces = { t: FACES[rot[0]!], l: FACES[rot[1]!], r: FACES[rot[2]!] }
+  return { ...faces, o: INK_HEX, k: INK_HEX, e: INK_HEX, f: INK_HEX, b: shade(faces.r, -0.25) }
+}
+
+/** Jev in a state, as the mock draws it. Asking tumbles and flickers its bars; answered and judging bob; judging tilts its top. */
+export function jevSprite(state: JevState, tier: Tier | undefined, t: number, o: { phase?: number; still?: boolean; noBlink?: boolean } = {}): Sprite {
+  const u = t + (o.phase ?? 0)
+  let dy = 0
+  let bars = tier ? TIERS.indexOf(tier) + 1 : 0
+  let rot = ROTATIONS[0]!
+  let tilt = 0
+  let legLift = -1
+  if (!o.still) {
+    if (state === 'asking') {
+      const f = Math.floor(u / 120)
+      rot = ROTATIONS[f % 3]!
+      bars = 1 + ((f * 7) % 3)
+      dy = Math.floor(u / 240) % 2 ? -1 : 0
+      legLift = Math.floor(u / 240) % 2
+    } else if (state === 'answered' || state === 'judging') {
+      const wave = 0.5 - 0.5 * Math.cos((2 * Math.PI * u) / BOB_MS)
+      dy = -Math.round(wave * wave * (3 - 2 * wave))
+      if (state === 'judging') tilt = Math.floor(u / 600) % 2 ? 1 : -1
+    }
+  }
+  const parts = jevParts(bars, dy, tilt, legLift)
+  const blink = !o.still && !o.noBlink && state !== 'judged' && wrap(u, BLINK_MS) < BLINK_HOLD_MS
+  const px: PxMap = new Map([...parts.top, ...parts.rest, ...parts.bars, ...parts.eyesLow, ...(blink ? [] : parts.eyesTop), ...parts.legs])
+  return { px, colors: jevColors(rot), order: JEV_ORDER }
+}
+
+const ORANGE = '#ea580c'
+/** What the canvas shows for a Jev call: Jev in its state, with the judge crab beside it while judging. */
+function jevPlaced(state: JevState, tier: Tier | undefined, t: number, phase: number, still: boolean): Placed[] {
+  if (state !== 'judging') return [{ sprite: jevSprite(state, tier, t, { phase, still }), ox: 3, oy: 0 }]
+  return [
+    { sprite: jevSprite(state, tier, t, { phase, still }), ox: 1, oy: 0 },
+    { sprite: crabSprite('haiku', t, { effort: 'high', phase: 300, still, body: ORANGE }), ox: 9, oy: 0 },
+  ]
+}
+const jevGridW = (state: JevState) => (state === 'judging' ? JEV_JUDGE_W : JEV_CANVAS_W)
+
 const DEFAULT_COLOR = 0x01000000
+const BASE64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
 
 // Uint8Array.toBase64 is outside the es2023 lib a mod's tsconfig names, so encode by hand.
 function toBase64(bytes: Uint8Array): string {
@@ -169,25 +345,44 @@ function toBase64(bytes: Uint8Array): string {
 }
 
 /**
- * The crab as `columns` by `rows` half-block cells (each cell two pixels tall), for a Raster or a
- * blit: the pose at `t` ms in the pet's body colour. `still` draws the standing pose.
+ * Sprites on a `gw` by `CANVAS_H` pixel grid as `columns` by `rows` half-block cells (each cell two
+ * pixels tall). A smaller canvas shrinks the grid evenly; where pixels merge, the code that comes
+ * first in the sprite's order wins, so eyes and props survive.
  */
-export function drawCrab(columns: number, rows: number, t: number, hue: number, still = false): string {
-  const grid = paint(still ? STILL : poseAt(t, hue))
-  const body = Number.parseInt(hueOf(hue).color.slice(1), 16)
-  const ink = Number.parseInt(EYE.slice(1), 16)
-  const pixels = rows * 2
-  // A target pixel looks at the grid pixels it covers: an eye beats the body, the body the outline.
-  const sample = (x: number, y: number) => {
-    const x0 = Math.floor((x * GRID_W) / columns)
-    const x1 = Math.max(x0 + 1, Math.ceil(((x + 1) * GRID_W) / columns))
-    const y0 = Math.floor((y * GRID_H) / pixels)
-    const y1 = Math.max(y0 + 1, Math.ceil(((y + 1) * GRID_H) / pixels))
-    let best = 0
-    for (let gy = y0; gy < y1; gy += 1) {
-      for (let gx = x0; gx < x1; gx += 1) best = Math.max(best, grid[gy * GRID_W + gx] ?? 0)
+function spriteCells(parts: Placed[], gw: number, columns: number, rows: number): string {
+  const color = new Int32Array(gw * CANVAS_H).fill(-1)
+  const rank = new Uint8Array(gw * CANVAS_H).fill(255)
+  for (const { sprite, ox, oy } of parts) {
+    for (const [k, c] of sprite.px) {
+      const [x, y] = k.split(',').map(Number) as [number, number]
+      const gx = x + ox
+      const gy = y + oy
+      const hex = sprite.colors[c]
+      if (gx < 0 || gx >= gw || gy < 0 || gy >= CANVAS_H || !hex) continue
+      color[gy * gw + gx] = Number.parseInt(hex.slice(1), 16)
+      const r = sprite.order.indexOf(c)
+      rank[gy * gw + gx] = r < 0 ? 100 : r
     }
-    return best === 2 ? body : best ? ink : DEFAULT_COLOR
+  }
+  const scale = gw / columns
+  // A target pixel looks at the grid pixels it covers.
+  const sample = (x: number, y: number) => {
+    const x0 = Math.floor(x * scale)
+    const x1 = Math.max(x0 + 1, Math.ceil((x + 1) * scale))
+    const y0 = Math.floor(y * scale)
+    const y1 = Math.max(y0 + 1, Math.ceil((y + 1) * scale))
+    let best = DEFAULT_COLOR
+    let bestRank = 256
+    for (let gy = y0; gy < Math.min(y1, CANVAS_H); gy += 1) {
+      for (let gx = x0; gx < Math.min(x1, gw); gx += 1) {
+        const i = gy * gw + gx
+        if (color[i]! >= 0 && rank[i]! < bestRank) {
+          best = color[i]!
+          bestRank = rank[i]!
+        }
+      }
+    }
+    return best
   }
   // A DataView writes little-endian whatever the platform's byte order, as a Raster requires.
   const bytes = new Uint8Array(columns * rows * 12)
@@ -210,72 +405,171 @@ export function drawCrab(columns: number, rows: number, t: number, hue: number, 
   return toBase64(bytes)
 }
 
-/** The pet's canvas for a body width: the cells its Raster asks for. */
-export function petCanvas(bodyColumns: number): { columns: number; rows: number } {
-  return bodyColumns >= PET_WIDE_FROM ? { columns: PET_COLS_WIDE, rows: PET_ROWS_WIDE } : { columns: PET_COLS_SMALL, rows: PET_ROWS_SMALL }
+/** The crab as `columns` by `rows` half-block cells for a Raster or a blit: the pose at `t` ms, its model's art, its body colour. */
+export function drawCrab(columns: number, rows: number, t: number, hue: number, o: { tier?: Tier; effort?: Effort; still?: boolean } = {}): string {
+  const sprite = crabSprite(o.tier ?? 'sonnet', t, { effort: o.effort, still: o.still, phase: phaseOf(hue), body: hueOf(hue).color })
+  return spriteCells([{ sprite, ox: 0, oy: 0 }], GRID_W, columns, rows)
+}
+
+/** Jev (with the judge crab beside it while judging) as cells; `phase` keeps one call out of step with another. */
+export function drawJev(columns: number, rows: number, state: JevState, tier: Tier | undefined, t: number, phase = 0, still = false): string {
+  return spriteCells(jevPlaced(state, tier, t, phase, still), jevGridW(state), columns, rows)
+}
+
+/** A canvas for a body width: the grid shrinks by half under the wide breakpoint, so the sprite keeps its shape. */
+export function spriteCanvas(bodyColumns: number, gridW: number): { columns: number; rows: number } {
+  const scale = bodyColumns >= PET_WIDE_FROM ? 1 : 2
+  return { columns: Math.ceil(gridW / scale), rows: Math.ceil(Math.ceil(CANVAS_H / scale) / 2) }
+}
+/** The crab's canvas for a body width. */
+export const petCanvas = (bodyColumns: number) => spriteCanvas(bodyColumns, GRID_W)
+
+// ---------- The same art as Svg: layers that CSS keyframes move, so a pet moves with no redraws ----------
+
+/** Svg pixels a grid pixel takes, and the pane columns a drawing of `gridW` pixels takes (about 6 pixels a column). */
+export function svgSize(bodyColumns: number, gridW: number) {
+  const px = bodyColumns >= PET_WIDE_FROM ? 3 : 2
+  return { width: gridW * px, height: CANVAS_H * px, columns: Math.ceil((gridW * px) / 6) }
+}
+
+const cellOf = (k: string) => k.split(',').map(Number) as [number, number]
+
+/** A path of unit squares per colour. */
+function svgPaths(px: PxMap, colors: Record<string, string>): string {
+  const byColor = new Map<string, string>()
+  for (const [k, c] of px) {
+    const [x, y] = cellOf(k)
+    const hex = colors[c]
+    if (hex) byColor.set(hex, `${byColor.get(hex) ?? ''}M${x} ${y}h1v1h-1z`)
+  }
+  return [...byColor].map(([hex, d]) => `<path fill="${hex}" d="${d}"/>`).join('')
+}
+
+const delayStyle = (seconds: number) => (seconds ? ` style="animation-delay:-${seconds.toFixed(3)}s"` : '')
+
+/** A layer is its pixels with a one-pixel outline round the ones `skip` does not already hold. */
+function svgLayer(px: PxMap, colors: Record<string, string>, skip: Set<string>, cls: string, delay: number): string {
+  const ring: PxMap = new Map()
+  for (const k of px.keys()) {
+    const [x, y] = cellOf(k)
+    for (const [a, b] of [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]] as const) {
+      const n = `${a},${b}`
+      if (a >= 0 && a < GRID_W && b >= 0 && b < GRID_H && !px.has(n) && !skip.has(n)) ring.set(n, 'O')
+    }
+  }
+  return `<g${cls ? ` class="${cls}"` : ''}${delayStyle(delay)}>${svgPaths(ring, colors)}${svgPaths(px, colors)}</g>`
+}
+
+/** The keyframes for a pet whose classes start with `p`: bob, leg phases, claws, blink, steam. */
+function crabCss(p: string, effort: Effort, steam: boolean): string {
+  const legSecs = (LEG_MS[effort] * 4) / 1000
+  const claw = CLAW_MS / 1000
+  return (
+    `.${p}bob{animation:${p}bob ${BOB_MS / 1000}s ease-in-out infinite}` +
+    `@keyframes ${p}bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-1px)}}` +
+    `.${p}lg{opacity:0;animation:${p}lg ${legSecs}s steps(1,end) infinite}@keyframes ${p}lg{0%{opacity:1}25%{opacity:0}100%{opacity:0}}` +
+    (steam ? `.${p}st{opacity:0;animation:${p}st ${STEAM_MS / 1000}s steps(1,end) infinite}@keyframes ${p}st{0%{opacity:1}33.3%{opacity:0}100%{opacity:0}}` : '') +
+    `.${p}up{opacity:0;animation:${p}up ${claw}s steps(1,end) infinite}@keyframes ${p}up{0%{opacity:1}10%{opacity:0}18%{opacity:1}28%{opacity:0}100%{opacity:0}}` +
+    `.${p}dn{animation:${p}dn ${claw}s steps(1,end) infinite}@keyframes ${p}dn{0%{opacity:0}10%{opacity:1}18%{opacity:0}28%{opacity:1}100%{opacity:1}}` +
+    `.${p}ey{animation:${p}ey ${BLINK_MS / 1000}s steps(1,end) infinite}@keyframes ${p}ey{0%{opacity:0}${((BLINK_HOLD_MS / BLINK_MS) * 100).toFixed(1)}%{opacity:1}100%{opacity:1}}` +
+    `@media (prefers-reduced-motion: reduce){.${p}bob,.${p}lg,.${p}st,.${p}up,.${p}dn,.${p}ey{animation:none}.${p}lg0,.${p}dn,.${p}ey{opacity:1}}`
+  )
+}
+
+/** The crab's drawing on the crab grid, and the CSS that moves it (none for a still pet). Classes start with `p`; `phase` is in seconds. */
+function crabSvgBody(tier: Tier, body: string, effort: Effort, moving: boolean, p: string, phase: number): { css: string; svg: string } {
+  const colors = crabColors(body)
+  const eyeY = crabGeo(tier).top + 2
+  const eyes = (ys: number[], cls = '', delay = 0) =>
+    `<g${cls ? ` class="${cls}"` : ''}${delayStyle(delay)}>${svgPaths(new Map(eyeXs(tier).flatMap(x => ys.map(y => [`${x},${y}`, 'E'] as [string, string]))), colors)}</g>`
+  const down = crabParts(tier, false, 0, 0)
+  if (!moving) {
+    const px: PxMap = new Map([...down.shell, ...down.arms, ...down.legs, ...down.props, ...down.armProps])
+    return { css: '', svg: svgLayer(px, colors, new Set(), '', 0) + eyes([eyeY, eyeY + 1]) }
+  }
+  const up = crabParts(tier, true, 0, 0)
+  const shell: PxMap = new Map([...down.shell, ...down.props])
+  const skip = new Set(shell.keys())
+  const legSecs = (LEG_MS[effort] * 4) / 1000
+  const layers = [
+    svgLayer(shell, colors, new Set(), '', 0),
+    svgLayer(new Map([...down.arms, ...down.armProps]), colors, skip, `${p}dn`, phase),
+    svgLayer(new Map([...up.arms, ...up.armProps]), colors, skip, `${p}up`, phase),
+    ...[0, 1, 2, 3].map(n => svgLayer(crabParts(tier, false, n, 0).legs, colors, skip, `${p}lg ${p}lg${n}`, phase + (legSecs * ((4 - n) % 4)) / 4)),
+    eyes([eyeY + 1]),
+    eyes([eyeY], `${p}ey`, phase),
+  ]
+  const steamed = effort === 'xhigh' || effort === 'max'
+  const steam = steamed
+    ? [0, 1, 2]
+        .map(k => {
+          const cells = new Map(steamAt(tier, k).filter(([, y]) => y >= 0).map(([x, y]) => [`${x},${y}`, 'S'] as [string, string]))
+          return `<g class="${p}st"${delayStyle(phase + ((STEAM_MS / 1000) * ((3 - k) % 3)) / 3)}>${svgPaths(cells, colors)}</g>`
+        })
+        .join('')
+    : ''
+  return { css: crabCss(p, effort, steamed), svg: `<g class="${p}bob"${delayStyle(phase)}>${layers.join('')}</g>${steam}` }
 }
 
 const petCache = new Map<string, string>()
 
 /**
- * The Svg pet. A working one carries its motion as CSS keyframes (bob, four leg phases, claws,
- * blink), so it moves with no redraws; any other is the standing pose, with no keyframes.
+ * The Svg pet. A working one carries its motion as CSS keyframes (bob, four leg phases at the
+ * effort's pace, claws, blink, and steam at xhigh and max), so it moves with no redraws; any
+ * other is the standing pose, with no keyframes.
  */
-function petSvg(hue: number, moving: boolean) {
-  const key = `${hue % HUES.length}:${moving}`
+function petSvg(hue: number, moving: boolean, tier: Tier, effort: Effort, bodyColumns: number) {
+  const size = svgSize(bodyColumns, GRID_W)
+  const key = `${hue % HUES.length}:${moving}:${tier}:${effort}:${size.width}`
   const hit = petCache.get(key)
   if (hit) return hit
-  const fill = hueOf(hue).color
-  const rect = (x: number, y: number, c: string) => `<rect x="${x + 1}" y="${y + 2}" width="1" height="1" fill="${c}"/>`
-  const keys = (list: Px[]) => new Set(list.map(([x, y]) => `${x},${y}`))
-  const core = keys(CORE)
-  // A layer is its pixels with a one-pixel outline round them, so every colour reads on light and dark.
-  const layer = (cls: string, pixels: Px[], delay = 0) => {
-    const own = keys(pixels)
-    const ring = new Set<string>()
-    for (const [x, y] of pixels) {
-      for (const [ax, ay] of [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]] as Px[]) {
-        const k = `${ax},${ay}`
-        if (!own.has(k) && !core.has(k)) ring.add(k)
-      }
-    }
-    const edge = [...ring].map(k => {
-      const [x, y] = k.split(',').map(Number)
-      return rect(x!, y!, OUTLINE)
-    })
-    const attrs = `${cls ? ` class="${cls}"` : ''}${delay ? ` style="animation-delay:-${delay.toFixed(3)}s"` : ''}`
-    return `<g${attrs}>${edge.join('')}${pixels.map(([x, y]) => rect(x, y, fill)).join('')}</g>`
-  }
-  const eyes = (pixels: Px[], cls = '', delay = 0) =>
-    `<g${cls ? ` class="${cls}"` : ''}${delay ? ` style="animation-delay:-${delay.toFixed(3)}s"` : ''}>${pixels.map(([x, y]) => rect(x, y, EYE)).join('')}</g>`
-  let body: string
-  let style = ''
-  if (moving) {
-    const phase = phaseOf(hue) / 1000
-    const legSecs = (LEG_MS * 4) / 1000
-    body =
-      layer('', CORE) +
-      layer('dn', ARMS_DOWN, phase) +
-      layer('up', ARMS_UP, phase) +
-      [0, 1, 2, 3].map(n => layer(`lg lg${n}`, legPixels(n), phase + (legSecs * ((4 - n) % 4)) / 4)).join('') +
-      eyes(EYES_LOW) +
-      eyes(EYES_TOP, 'ey', phase)
-    style =
-      `<style>` +
-      `.bob{animation:bob ${BOB_MS / 1000}s ease-in-out infinite;animation-delay:-${phase.toFixed(3)}s}` +
-      `@keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-1px)}}` +
-      `.lg{opacity:0;animation:lg ${legSecs}s steps(1,end) infinite}@keyframes lg{0%{opacity:1}25%{opacity:0}100%{opacity:0}}` +
-      `.up{opacity:0;animation:up ${CLAW_MS / 1000}s steps(1,end) infinite}@keyframes up{0%{opacity:1}10%{opacity:0}18%{opacity:1}28%{opacity:0}100%{opacity:0}}` +
-      `.dn{animation:dn ${CLAW_MS / 1000}s steps(1,end) infinite}@keyframes dn{0%{opacity:0}10%{opacity:1}18%{opacity:0}28%{opacity:1}100%{opacity:1}}` +
-      `.ey{animation:ey ${BLINK_MS / 1000}s steps(1,end) infinite}@keyframes ey{0%{opacity:0}${((BLINK_HOLD_MS / BLINK_MS) * 100).toFixed(1)}%{opacity:1}100%{opacity:1}}` +
-      `@media (prefers-reduced-motion: reduce){.bob,.lg,.up,.dn,.ey{animation:none}.lg0,.dn,.ey{opacity:1}}` +
-      `</style>`
-  } else {
-    body = layer('', [...CORE, ...ARMS_DOWN, ...legPixels(0)]) + eyes([...EYES_LOW, ...EYES_TOP])
-  }
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${GRID_W} ${GRID_H}" width="${PET_PX_W}" height="${PET_PX_H}" shape-rendering="crispEdges">${style}<g${moving ? ' class="bob"' : ''}>${body}</g></svg>`
+  const art = crabSvgBody(tier, hueOf(hue).color, effort, moving, '', phaseOf(hue) / 1000)
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${GRID_W} ${CANVAS_H}" width="${size.width}" height="${size.height}" shape-rendering="crispEdges">${art.css ? `<style>${art.css}</style>` : ''}${art.svg}</svg>`
   petCache.set(key, svg)
   return svg
+}
+
+/**
+ * The Svg for a Jev call. Asking is a flipbook of its twelve frames (its eyes do not blink there);
+ * answered and judging are layers that bob, blink and tilt; any other state is one still frame.
+ */
+function jevSvg(state: JevState, tier: Tier | undefined, moving: boolean, phase: number, bodyColumns: number): string {
+  const gw = jevGridW(state)
+  const size = svgSize(bodyColumns, gw)
+  const open = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${gw} ${CANVAS_H}" width="${size.width}" height="${size.height}" shape-rendering="crispEdges">`
+  const secs = phase / 1000
+  if (!moving) {
+    const drawn = jevPlaced(state, tier, 0, phase, true).map(({ sprite, ox }) => `<g transform="translate(${ox} 0)">${svgPaths(sprite.px, sprite.colors)}</g>`)
+    return `${open}${drawn.join('')}</svg>`
+  }
+  if (state === 'asking') {
+    const frames = Array.from({ length: 12 }, (_, i) => {
+      const sprite = jevSprite('asking', tier, i * 120, { noBlink: true })
+      return `<g class="fb"${delayStyle(secs + (1.44 * ((12 - i) % 12)) / 12)}>${svgPaths(sprite.px, sprite.colors)}</g>`
+    })
+    const css = '.fb{opacity:0;animation:fb 1.44s steps(1,end) infinite}@keyframes fb{0%{opacity:1}8.333%{opacity:0}100%{opacity:0}}@media (prefers-reduced-motion: reduce){.fb{animation:none}.fb:first-child{opacity:1}}'
+    return `${open}<style>${css}</style><g transform="translate(3 0)">${frames.join('')}</g></svg>`
+  }
+  const colors = jevColors(ROTATIONS[0]!)
+  const parts = jevParts(tier ? TIERS.indexOf(tier) + 1 : 0, 0, 0, -1)
+  const group = (px: PxMap, cls = '', delay = 0) => `<g${cls ? ` class="${cls}"` : ''}${delayStyle(delay)}>${svgPaths(px, colors)}</g>`
+  // The lower leg row stays on the ground while the rest of Jev hops.
+  const lower: PxMap = new Map([...parts.legs].filter(([k]) => k.endsWith(`,${JEV_H - 1}`)))
+  const jev =
+    `<g class="jbob"${delayStyle(secs)}>` +
+    group(parts.top, state === 'judging' ? 'jtl' : '', secs) +
+    group(new Map([...parts.rest, ...parts.bars, ...parts.eyesLow, ...parts.legs])) +
+    group(parts.eyesTop, 'jey', secs) +
+    `</g>` +
+    group(lower)
+  const css =
+    `.jbob{animation:jbob ${BOB_MS / 1000}s ease-in-out infinite}@keyframes jbob{0%,100%{transform:translateY(0)}50%{transform:translateY(-1px)}}` +
+    `.jey{animation:jey ${BLINK_MS / 1000}s steps(1,end) infinite}@keyframes jey{0%{opacity:0}${((BLINK_HOLD_MS / BLINK_MS) * 100).toFixed(1)}%{opacity:1}100%{opacity:1}}` +
+    `.jtl{animation:jtl 1.2s steps(1,end) infinite}@keyframes jtl{0%{transform:translateX(-1px)}50%{transform:translateX(1px)}100%{transform:translateX(1px)}}`
+  const reduced = '@media (prefers-reduced-motion: reduce){.jbob,.jey,.jtl{animation:none}.jey{opacity:1}}'
+  if (state === 'answered') return `${open}<style>${css}${reduced}</style><g transform="translate(3 0)">${jev}</g></svg>`
+  const crab = crabSvgBody('haiku', ORANGE, 'high', true, 'c', 0.3)
+  return `${open}<style>${css}${crab.css}${reduced}</style><g transform="translate(1 0)">${jev}</g><g transform="translate(9 0)">${crab.svg}</g></svg>`
 }
 
 // ---------- The desk itself; $.state carries a copy for the pane to draw ----------
@@ -299,7 +593,10 @@ let focusTimer: { cancel: () => void } | null = null
 // False while /helpers motion off holds the pets still; $.store keeps the choice.
 let motion = true
 // Each pet Raster the last draw mounted, by its key: what the frame timer blits.
-const pets = new Map<string, { requestId: string; id: string; columns: number; rows: number; hue: number }>()
+type PetEntry = { requestId: string; id: string; columns: number; rows: number } & ({ kind: 'crab'; hue: number } | { kind: 'jev' })
+const pets = new Map<string, PetEntry>()
+// Effort asked for in an Agent call, by its tool_use_id, until the spawn picks it up.
+const dispatchEffort = new Map<string, Effort>()
 // Jev's calls as last read from its live file, and whether the poller still watches for changes.
 let jev: JevCall[] = []
 let jevRaw = ''
@@ -538,6 +835,8 @@ async function pollJev($: EngineInterface) {
     jevRaw = raw
     jev = marked
     await $.state.set(JEV, marked)
+    // A call opening or closing starts or stops the sprites' timer.
+    syncTimers($)
   }
   const live = marked.some(c => !jevFinal(c) && !c.stale) || now < jevGraceUntil
   if (live !== jevLive) {
@@ -580,9 +879,25 @@ async function poll($: EngineInterface) {
   else await readCost($)
 }
 
-const runningPets = () => [...pets.values()].some(p => helpers.find(hp => hp.id === p.id)?.phase === 'working')
+// Jev's art moves while a call is asked, answered or being judged, and not once it is stale.
+const jevMoving = (c: JevCall) => !c.stale && (c.phase === 'asking' || c.phase === 'answered' || c.phase === 'judging')
+const jevStateOf = (c: JevCall): JevState => (c.stale || c.phase === 'skipped' || c.phase === 'judged' ? 'judged' : c.phase)
+// Each call keeps its own place in the tumble, so two cards never move in step.
+const jevPhaseOf = (id: string) => [...id].reduce((n, ch) => (n * 31 + ch.charCodeAt(0)) % 1500, 7)
 
-/** One 40 ms frame for every running pet; a denied blit means that canvas is gone, so it is not painted again until the next draw. */
+/** The next frame of a registered pet, or null when it should stand still: its helper is not working, or its Jev call is over. */
+function petCells(pet: PetEntry, t: number): string | null {
+  if (pet.kind === 'crab') {
+    const hp = helpers.find(x => x.id === pet.id)
+    return hp?.phase === 'working' ? drawCrab(pet.columns, pet.rows, t, pet.hue, { tier: tierOf(hp.model), effort: effortOf(hp.level) }) : null
+  }
+  const c = jev.find(x => x.id === pet.id)
+  return c && jevMoving(c) ? drawJev(pet.columns, pet.rows, jevStateOf(c), c.tier, t, jevPhaseOf(c.id)) : null
+}
+
+const movingPets = () => [...pets.values()].some(p => petCells(p, 0) !== null)
+
+/** One 40 ms frame for every moving pet, crabs and Jev alike; a denied blit means that canvas is gone, so it is not painted again until the next draw. */
 async function crabFrame($: EngineInterface) {
   if (crabBusy) return
   crabBusy = true
@@ -591,9 +906,10 @@ async function crabFrame($: EngineInterface) {
     for (const [key, pet] of [...pets]) {
       // Motion may turn off, or the timer stop, while an earlier blit is in flight.
       if (!motion || off || !crabber) break
-      if (helpers.find(hp => hp.id === pet.id)?.phase !== 'working') continue
+      const cells = petCells(pet, t)
+      if (cells === null) continue
       const { columns, rows } = pet
-      const result = await $.ui.blit({ requestId: pet.requestId, key, cells: drawCrab(columns, rows, t, pet.hue), columns, rows })
+      const result = await $.ui.blit({ requestId: pet.requestId, key, cells, columns, rows })
       if (result.deny !== undefined) pets.delete(key)
     }
   } finally {
@@ -619,8 +935,8 @@ function syncTimers($: EngineInterface) {
     poller?.cancel()
     poller = null
   }
-  // Pets move only while a helper works, motion is on, and a draw has mounted one.
-  if (motion && !off && runningPets()) {
+  // Pets move only while a helper works or a Jev call is open, motion is on, and a draw has mounted one.
+  if (motion && !off && movingPets()) {
     crabber ??= $.clock.every(FRAME_MS, () => {
       void crabFrame($).catch(err => log($, `crab: ${String(err)}`))
     })
@@ -639,7 +955,7 @@ async function publish($: EngineInterface) {
   syncTimers($)
 }
 
-async function addHelper($: EngineInterface, id: string, description: string, type: string, model: string, name = '') {
+async function addHelper($: EngineInterface, id: string, description: string, type: string, model: string, name = '', level: Effort = 'medium') {
   const known = helpers.find(hp => hp.id === id)
   if (known) {
     // Found first through its own tool calls: fill in what the spawn knows.
@@ -661,6 +977,7 @@ async function addHelper($: EngineInterface, id: string, description: string, ty
     heardFrom: [],
     model,
     effort: '',
+    level,
     phase: 'working',
     startedAt: 0,
     endedAt: 0,
@@ -1258,6 +1575,7 @@ export const register: Register = on => {
         helpers = value.map(hp => ({
           ...copy({ ...hp, sentTo: hp.sentTo ?? [], heardFrom: hp.heardFrom ?? [] }),
           name: hp.name ?? '',
+          level: effortOf(hp.level),
           hue: typeof hp.hue === 'number' ? hp.hue : hp.seat % HUES.length,
         }))
         seats = Math.max(...helpers.map(hp => hp.seat)) + 1
@@ -1341,8 +1659,10 @@ export const register: Register = on => {
     if (off) return r
     void watchJev($).catch(err => log($, `jev: ${String(err)}`))
     const id = (r as { agentId?: string }).agentId
+    const level = dispatchEffort.get(e.tool_use_id) ?? 'medium'
+    dispatchEffort.delete(e.tool_use_id)
     if (id) {
-      void addHelper($, id, e.description || 'Subagent', e.subagentType || 'subagent', shortModel(e.model ?? r.model ?? ''), e.name ?? '').catch(err =>
+      void addHelper($, id, e.description || 'Subagent', e.subagentType || 'subagent', shortModel(e.model ?? r.model ?? ''), e.name ?? '', level).catch(err =>
         log($, `spawn: ${String(err)}`),
       )
     }
@@ -1376,6 +1696,7 @@ export const register: Register = on => {
       return { result: said } as never
     }
     if (off) return next(e)
+    if (tool === 'Agent' || tool === 'Task') dispatchEffort.set(String(args.tool_use_id ?? ''), effortOf(args.effort))
     // Jev rates an Agent dispatch before it runs: watch its file again.
     if (!id && (tool === 'Agent' || tool === 'Task')) void watchJev($).catch(err => log($, `jev: ${String(err)}`))
     if (id) {
@@ -1467,7 +1788,8 @@ export const register: Register = on => {
     const width = Math.max(32, e.props.bodyColumns)
     // Inside a card: its border and padding take 4 columns, the pet petW more.
     const canvas = petCanvas(e.props.bodyColumns)
-    const petW = Svg ? PET_W : canvas.columns + PET_GAP
+    const petSvgSize = svgSize(e.props.bodyColumns, GRID_W)
+    const petW = Svg ? petSvgSize.columns : canvas.columns + PET_GAP
     const cw = width - 4 - petW
 
     const { running, finished, stopped } = byGroup(list)
@@ -1490,19 +1812,21 @@ export const register: Register = on => {
     const pet = (hp: Helper) => {
       const hue = hueOf(hp.hue)
       const moving = moves && hp.phase === 'working'
+      const tier = tierOf(hp.model)
+      const effort = effortOf(hp.level)
       if (Svg) {
         return (
-          <Box key={`pet-${hp.id}`} width={PET_W} flexShrink={0}>
-            <Svg source={petSvg(hp.hue, moving)} alt={`Claude crab, ${hue.name}`} width={PET_PX_W} height={PET_PX_H} />
+          <Box key={`pet-${hp.id}`} width={petW} flexShrink={0}>
+            <Svg source={petSvg(hp.hue, moving, tier, effort, e.props.bodyColumns)} alt={`Claude crab, ${hue.name}`} width={petSvgSize.width} height={petSvgSize.height} />
           </Box>
         )
       }
       if (!Raster) return null
       const { columns, rows } = canvas
-      pets.set(`crab-${hp.id}`, { requestId: e.requestId, id: hp.id, columns, rows, hue: hp.hue })
+      pets.set(`crab-${hp.id}`, { kind: 'crab', requestId: e.requestId, id: hp.id, columns, rows, hue: hp.hue })
       return (
         <Box key={`pet-${hp.id}`} width={petW} flexShrink={0}>
-          <Raster key={`crab-${hp.id}`} columns={columns} rows={rows} cells={drawCrab(columns, rows, now, hp.hue, !moving)} />
+          <Raster key={`crab-${hp.id}`} columns={columns} rows={rows} cells={drawCrab(columns, rows, now, hp.hue, { tier, effort, still: !moving })} />
         </Box>
       )
     }
@@ -1548,6 +1872,7 @@ export const register: Register = on => {
       const time = clockTime((live ? Math.max(clk.now, hp.startedAt) : hp.endedAt) - hp.startedAt)
       const meta = [hp.hasUsage ? `${tokenText(hp.tokens + hp.turnTokens)} tokens` : '', time].filter(Boolean).join(' · ')
       const who = [hp.type, hp.model, hp.effort].filter(Boolean).join(' · ')
+      const tier = tierOf(hp.model)
       const current = hp.steps[hp.steps.length - 1]
       const spin = SPIN[clk.tick % SPIN.length]!
       const pulse = PULSE[clk.tick % PULSE.length]!
@@ -1588,9 +1913,15 @@ export const register: Register = on => {
               <Text weight="bold" color={markColor}>{mark}</Text>
             </Box>
             <Box flexDirection="row" justifyContent="space-between" width={cw}>
-              <Text dimColor wrap="truncate-end">
-                {cut(who, Math.max(4, cw - meta.length - 1))}
-              </Text>
+              <Box flexDirection="row" gap={1} flexShrink={1}>
+                <Text weight="bold" color={TIER_KEY[tier]}>
+                  {tier[0]!.toUpperCase()}
+                </Text>
+                <Text dimColor>{dotsOf(effortOf(hp.level))}</Text>
+                <Text dimColor wrap="truncate-end">
+                  {cut(who, Math.max(4, cw - meta.length - 9))}
+                </Text>
+              </Box>
               <Text dimColor wrap="truncate-end">
                 {meta}
               </Text>
@@ -1702,6 +2033,31 @@ export const register: Register = on => {
       const ran = `${c.phase === 'asking' ? 'chose' : 'ran'} ${c.chosen}${c.chosenEffort ? ` · ${c.chosenEffort}` : ''}`
       const verdict = c.phase === 'judging' ? (stale ? 'judge never answered (stale)' : 'judging…') : c.judge ? `judge (${c.judge.model}): ${c.judge.tier} · ${c.judge.effort} — ${c.judge.reason}` : ''
       const text = `${cut(c.description, Math.max(8, jw - 6 - head.length - 4))} → ${head}`
+      // Jev's sprite: a Raster on the terminal, an Svg elsewhere; it moves while the call is open and stands still after.
+      const state = jevStateOf(c)
+      const moving = moves && jevMoving(c)
+      const phase = jevPhaseOf(c.id)
+      const gw = jevGridW(state)
+      const art = spriteCanvas(e.props.bodyColumns, gw)
+      const svgBox = svgSize(e.props.bodyColumns, gw)
+      let sprite = null
+      let spriteW = 0
+      if (Svg) {
+        spriteW = svgBox.columns + 1
+        sprite = (
+          <Box key={`jev-art-${c.id}`} width={spriteW} flexShrink={0}>
+            <Svg source={jevSvg(state, c.tier, moving, phase, e.props.bodyColumns)} alt="Jev, the cube-bot" width={svgBox.width} height={svgBox.height} />
+          </Box>
+        )
+      } else if (Raster) {
+        spriteW = art.columns + 1
+        pets.set(`jev-${c.id}`, { kind: 'jev', requestId: e.requestId, id: c.id, columns: art.columns, rows: art.rows })
+        sprite = (
+          <Box key={`jev-art-${c.id}`} width={spriteW} flexShrink={0}>
+            <Raster key={`jev-${c.id}`} columns={art.columns} rows={art.rows} cells={drawJev(art.columns, art.rows, state, c.tier, now, phase, !moving)} />
+          </Box>
+        )
+      }
       return (
         <Box key={`jev-${c.id}`} flexDirection="column" width={width} borderStyle="round" borderColor="suggestion" borderDimColor={!live} paddingX={1} marginBottom={1}>
           <Box key={`jev-head-${c.id}`} flexDirection="row" gap={1} width={jw}>
@@ -1712,9 +2068,12 @@ export const register: Register = on => {
               {`· ${text}`}
             </Text>
           </Box>
-          <Text key={`jev-ran-${c.id}`} dimColor wrap="truncate-end">
-            {cut(ran, jw)}
-          </Text>
+          <Box key={`jev-body-${c.id}`} flexDirection="row" width={jw}>
+            {sprite}
+            <Text key={`jev-ran-${c.id}`} dimColor wrap="truncate-end">
+              {cut(ran, jw - spriteW)}
+            </Text>
+          </Box>
           {verdict ? (
             <Text key={`jev-verdict-${c.id}`} color={c.phase === 'judging' ? 'suggestion' : undefined} dimColor={c.phase !== 'judging'} wrap="truncate-end">
               {cut(verdict, jw)}
@@ -1726,6 +2085,7 @@ export const register: Register = on => {
 
     // The groups build the cards, and the cards register their pets: draw them before the frame timer looks.
     const groups = [group('running', 'Running', running, GOOD, INK), group('finished', 'Finished', finished, WARN, INK), group('stopped', 'Stopped', stopped, BAD, INK)]
+    const jevCards = calls.map(jevCard)
     // Starts the frame timer when this draw mounted the first running pet; a no-op otherwise.
     syncTimers($)
 
@@ -1751,7 +2111,7 @@ export const register: Register = on => {
             ))}
           </Box>
         ) : null}
-        {calls.map(jevCard)}
+        {jevCards}
         {list.length ? null : <Text dimColor>Cards show up here when Claude starts a subagent.</Text>}
         {groups}
         {e.props.isFocused === false ? (

@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { FoundElement } from 'claude-code/testing'
 import type { ThemeKey } from 'claude-code'
 
-import { drawCrab, petCanvas } from './register'
+import { crabSprite, drawCrab, drawJev, jevSprite, petCanvas, poseAt, tierOf } from './register'
 
 /** The `on` a test body is handed. */
 type On = Parameters<NonNullable<Parameters<typeof test>[2]>>[1]
@@ -883,9 +883,11 @@ test('drawCrab is sized to its canvas and moves over time', () => {
   const seen = new Set<string>()
   for (let t = 0; t < 4_000; t += 40) seen.add(drawCrab(columns, rows, t, 0))
   expect(seen.size, 'bob, legs, claws and blink make many distinct frames').toBeGreaterThan(8)
-  expect(drawCrab(columns, rows, 0, 0, true), 'the standing pose does not move').toBe(drawCrab(columns, rows, 999, 0, true))
+  expect(drawCrab(columns, rows, 0, 0, { still: true }), 'the standing pose does not move').toBe(drawCrab(columns, rows, 999, 0, { still: true }))
   expect(drawCrab(columns, rows, 400, 0) !== drawCrab(columns, rows, 400, 1), 'each pet has its own colour and phase').toBe(true)
-  expect(petCanvas(40).columns < petCanvas(144).columns, 'a narrow pane gets the small pet').toBe(true)
+  expect(petCanvas(40), 'a narrow pane gets the half-size pet').toEqual({ columns: 12, rows: 5 })
+  expect(petCanvas(80), 'a wide pane gets the full-size pet').toEqual({ columns: 24, rows: 9 })
+  expect(petCanvas(144), 'and so does a very wide one').toEqual({ columns: 24, rows: 9 })
 })
 
 test('the pet timer runs only while a helper works, once, and stops on a denied blit, motion off or the last finish', { timeoutMs: 30000 }, async ($, on) => {
@@ -939,7 +941,7 @@ test('the pet timer runs only while a helper works, once, and stops on a denied 
   expect(probes.blits, 'motion off: no blits').toBe(t3)
   const { columns, rows } = petCanvas(80)
   const rasters = (await v.findAll({ type: 'Raster' })).map(r => String(r.props.cells))
-  expect(rasters, 'standing frames while off').toContain(drawCrab(columns, rows, 0, 1, true))
+  expect(rasters, 'standing frames while off').toContain(drawCrab(columns, rows, 0, 1, { tier: 'opus', still: true }))
   await run('motion on')
   await clock.advance(400)
   expect(probes.blits, 'motion on: blits again').toBeGreaterThan(t3)
@@ -978,7 +980,7 @@ test('motion off is kept across sessions: a stored off starts the pets still', {
   await clock.advance(1_000)
   expect(probes.blits, 'stored off: no blits while working').toBe(0)
   const { columns, rows } = petCanvas(80)
-  expect(String((await v.find({ type: 'Raster' }))?.props.cells), 'standing pose').toBe(drawCrab(columns, rows, 0, 0, true))
+  expect(String((await v.find({ type: 'Raster' }))?.props.cells), 'standing pose').toBe(drawCrab(columns, rows, 0, 0, { tier: 'opus', still: true }))
   await v.unmount()
   const d = await $.ui.mount({ plugin: 'helper-desk', surface: 'desktop', component: 'Pane', requestId: 'helpers', props: props(80) })
   const svg = String((await d.findAll({ type: 'Svg' })).find(p => String(p.props.alt).startsWith('Claude crab'))?.props.source)
@@ -1023,6 +1025,8 @@ test('a Jev call stuck open turns stale and the poller stops', { timeoutMs: 3000
   const files: Record<string, string> = { [JEV_FILE]: jevFile([jevCall('j1', 'judging', { tier: 'sonnet', effort: 'high' }), jevCall('j2', 'asking', { at: 1_000_000 + 11 * 60_000 })]) }
   const { clock, probes } = rig(on, files)
   await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface: 'terminal', isInteractive: true } as never)
+  // Motion off, so no 40 ms sprite timer runs through the twenty minutes this test lets pass.
+  await $.command.run({ command: 'helpers', args: 'motion off', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } } as never)
   const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'Pane', requestId: 'helpers', props: props(80) })
   expect(await v.find({ type: 'Text', text: /^judging…$/ }), 'live at first').toBeDefined()
   await clock.advance(9 * 60_000)
@@ -1102,4 +1106,174 @@ test('/helpers goto and a chip open a folded group first', { timeoutMs: 30000 },
   expect(await v.find({ key: 'card-agent-a2' }), 'finished group folded').toBeUndefined()
   await v.press({ key: 'goto|agent-a1|to|agent-a2' })
   expect(await v.find({ key: 'card-agent-a2' }), 'the chip opened the finished group').toBeDefined()
+})
+
+// ---------- Sprites ----------
+
+const countOf = (sprite: { px: Map<string, string> }, code: string) => [...sprite.px.values()].filter(c => c === code).length
+const cellOf = (key: string) => key.split(',').map(Number) as [number, number]
+
+test('the shell size and the prop tell the model', () => {
+  const sizes = { haiku: [8, 5], sonnet: [10, 7], opus: [12, 8] } as const
+  for (const tier of ['haiku', 'sonnet', 'opus'] as const) {
+    const sprite = crabSprite(tier, 0, { still: true })
+    const shell = [...sprite.px].filter(([k, c]) => 'BDL'.includes(c) && cellOf(k)[1] <= 13).map(([k]) => cellOf(k))
+    const xs = shell.map(([x]) => x)
+    const ys = shell.map(([, y]) => y)
+    const [w, h] = sizes[tier]
+    // The two claws on each side add four columns to the shell.
+    expect(Math.max(...xs) - Math.min(...xs) + 1, `${tier}: shell and claws wide`).toBe(w + 4)
+    expect(Math.max(...ys) - Math.min(...ys) + 1, `${tier}: shell tall`).toBe(h)
+    const props = { sprout: countOf(sprite, 'G') + countOf(sprite, 'g'), quill: countOf(sprite, 'Q') + countOf(sprite, 'N'), crown: countOf(sprite, 'C') }
+    expect(props.sprout > 0, `${tier}: sprout`).toBe(tier === 'haiku')
+    expect(props.quill > 0, `${tier}: quill`).toBe(tier === 'sonnet')
+    expect(props.crown > 0, `${tier}: crown`).toBe(tier === 'opus')
+    expect(countOf(sprite, 'L') > 0, `${tier}: spots only on opus`).toBe(tier === 'opus')
+  }
+  expect(drawCrab(24, 9, 0, 0, { tier: 'haiku', still: true }) !== drawCrab(24, 9, 0, 0, { tier: 'opus', still: true }), 'the art differs').toBe(true)
+  expect([tierOf('Haiku 4.5'), tierOf('Opus 5.5'), tierOf('Sonnet'), tierOf('Fable 5.1'), tierOf('')], 'the tier from a model name; unknown is sonnet').toEqual(['haiku', 'opus', 'sonnet', 'sonnet', 'sonnet'])
+})
+
+test('effort sets the leg pace, and steam rises only at xhigh and max while working', () => {
+  const stepMs = (effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max') => {
+    const first = poseAt(0, 0, effort).legs
+    let t = 1
+    while (poseAt(t, 0, effort).legs === first) t += 1
+    return t
+  }
+  expect([stepMs('low'), stepMs('medium'), stepMs('high'), stepMs('xhigh'), stepMs('max')], 'one leg step in ms').toEqual([200, 140, 110, 90, 75])
+  for (const effort of ['low', 'medium', 'high'] as const) expect(countOf(crabSprite('sonnet', 500, { effort }), 'S'), `${effort}: no steam`).toBe(0)
+  for (const effort of ['xhigh', 'max'] as const) {
+    expect(countOf(crabSprite('sonnet', 500, { effort }), 'S'), `${effort}: steam while working`).toBeGreaterThan(0)
+    expect(countOf(crabSprite('sonnet', 500, { effort, still: true }), 'S'), `${effort}: none once still`).toBe(0)
+    const frames = new Set([0, 300, 600].map(t => [...crabSprite('sonnet', t, { effort }).px].filter(([, c]) => c === 'S').map(([k]) => k).join()))
+    expect(frames.size, `${effort}: the puff rises`).toBeGreaterThan(1)
+  }
+})
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`each card shows its model badge and effort dots; the Svg carries steam only for a working xhigh pet (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const { clock } = rig(on, {})
+    await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface, isInteractive: true } as never)
+    const dispatch = async (n: number, model: string, effort?: string) => {
+      await $.tool.call({ tool: 'Agent', tool_use_id: `s${n}`, description: `Task ${n}`, prompt: 'x', subagentType: 'general-purpose', ...(effort ? { effort } : {}) } as never)
+      await $.agent.spawn({ tool_use_id: `s${n}`, prompt: 'x', description: `Task ${n}`, subagentType: 'general-purpose', model } as never)
+    }
+    await dispatch(1, 'haiku', 'low')
+    await dispatch(2, 'sonnet')
+    await dispatch(3, 'opus', 'xhigh')
+    await clock.settle()
+    for (const width of WIDTHS) {
+      const v = await $.ui.mount({ plugin: 'helper-desk', surface, component: 'Pane', requestId: 'helpers', props: props(width) })
+      const where = `${surface} ${width}`
+      for (const [letter, dots] of [['H', '●○○○○'], ['S', '●●○○○'], ['O', '●●●●○']]) {
+        const badge = await v.find({ type: 'Text', text: new RegExp(`^${letter}$`) })
+        expect(badge, `${where}: badge ${letter}`).toBeDefined()
+        expect(['success', 'suggestion', 'claude'], `${where}: badge ${letter} is a theme key`).toContain(String(badge?.props.color))
+        expect(await v.find({ type: 'Text', text: new RegExp(`^${dots}$`) }), `${where}: dots ${dots}`).toBeDefined()
+      }
+      expect(rawColors(await v.findAll({})), `${where}: raw colours`).toEqual([])
+      if (surface === 'desktop') {
+        const svgs = (await v.findAll({ type: 'Svg' })).filter(p => String(p.props.alt).startsWith('Claude crab')).map(p => String(p.props.source))
+        expect(svgs.filter(x => x.includes('@keyframes st')), `${where}: steam on the xhigh pet only`).toHaveLength(1)
+        expect(svgs.filter(x => x.includes('@keyframes lg')), `${where}: all three move`).toHaveLength(3)
+        expect(svgs.some(x => x.includes('lg 0.8s')), `${where}: low effort legs, 4 x 200 ms`).toBe(true)
+        expect(svgs.find(x => x.includes('@keyframes st'))!.includes('lg 0.36s'), `${where}: xhigh effort legs, 4 x 90 ms`).toBe(true)
+        expect(new Set(svgs).size, `${where}: three different pets`).toBe(3)
+      }
+      await v.unmount()
+    }
+    // A finished pet is still: no keyframes at all.
+    if (surface === 'desktop') {
+      await $.turn.complete({ answer: 'ok', agentId: 'agent-a3', reason: 'answer', durationMs: 1, isAborted: false, turnId: 't1' } as never)
+      await clock.settle()
+      const v = await $.ui.mount({ plugin: 'helper-desk', surface, component: 'Pane', requestId: 'helpers', props: props(80) })
+      const svgs = (await v.findAll({ type: 'Svg' })).filter(p => String(p.props.alt).startsWith('Claude crab')).map(p => String(p.props.source))
+      expect(svgs.filter(x => x.includes('@keyframes st')), 'no steam once it is done').toHaveLength(0)
+      expect(svgs.filter(x => !x.includes('@keyframes')), 'the finished pet has no keyframes').toHaveLength(1)
+    }
+  })
+}
+
+test('Jev bars show its pick, the asking cube tumbles, and a judged one stands still', () => {
+  const barColumns = (tier: 'haiku' | 'sonnet' | 'opus') =>
+    new Set([...jevSprite('answered', tier, 0, { still: true }).px].filter(([, c]) => c === 'k').map(([k]) => cellOf(k)[0])).size
+  expect([barColumns('haiku'), barColumns('sonnet'), barColumns('opus')], 'one, two or three bars').toEqual([1, 2, 3])
+  const asking = new Set<string>()
+  for (let t = 0; t < 1_440; t += 120) asking.add(drawJev(20, 9, 'asking', 'sonnet', t))
+  expect(asking.size, 'asking: three rotations, the hop and the first blinks, at least six distinct frames').toBeGreaterThanOrEqual(6)
+  expect(drawJev(20, 9, 'asking', 'sonnet', 0) !== drawJev(20, 9, 'asking', 'sonnet', 120), 'and each 120 ms step shows another').toBe(true)
+  expect(drawJev(20, 9, 'judged', 'sonnet', 0), 'judged: still').toBe(drawJev(20, 9, 'judged', 'sonnet', 777))
+  const judging = new Set<string>()
+  for (let t = 0; t < 2_400; t += 120) judging.add(drawJev(16, 5, 'judging', 'sonnet', t))
+  expect(judging.size, 'judging: bobs, tilts and the judge crab moves').toBeGreaterThan(4)
+  expect(drawJev(32, 9, 'judging', 'sonnet', 0, 0, true).length, 'judging canvas 32 wide').toBe(32 * 9 * 16)
+  expect(drawJev(20, 9, 'asking', 'sonnet', 0).length, 'single canvas 20 wide').toBe(20 * 9 * 16)
+})
+
+test('Jev draws as an Svg with keyframes only while its call is open', { timeoutMs: 30000 }, async ($, on) => {
+  const files: Record<string, string> = {
+    [JEV_FILE]: jevFile([
+      jevCall('j1', 'asking'),
+      jevCall('j2', 'answered', { tier: 'opus', effort: 'high' }),
+      jevCall('j3', 'judging', { tier: 'sonnet', effort: 'high' }),
+      jevCall('j4', 'judged', { tier: 'haiku', effort: 'low' }),
+    ]),
+  }
+  rig(on, files)
+  await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface: 'desktop', isInteractive: true } as never)
+  for (const width of WIDTHS) {
+    const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'desktop', component: 'Pane', requestId: 'helpers', props: props(width) })
+    const art = (await v.findAll({ type: 'Svg' })).filter(p => p.props.alt === 'Jev, the cube-bot').map(p => String(p.props.source))
+    expect(art, `${width}: one drawing a call`).toHaveLength(4)
+    expect(art[0]!.includes('@keyframes fb'), `${width}: asking tumbles`).toBe(true)
+    expect(art[1]!.includes('@keyframes jbob') && art[1]!.includes('@keyframes jey'), `${width}: answered bobs and blinks`).toBe(true)
+    expect(art[2]!.includes('@keyframes jtl') && art[2]!.includes('@keyframes cbob'), `${width}: judging tilts, beside its judge crab`).toBe(true)
+    expect(art[3]!.includes('@keyframes'), `${width}: judged stands still`).toBe(false)
+    expect(art.every(x => x.length < 131072), `${width}: under the Svg limit`).toBe(true)
+    await v.unmount()
+  }
+})
+
+test('one timer paints crabs and Jev: nothing moving is no blits, an open Jev call alone is some, a judged one none', { timeoutMs: 30000 }, async ($, on) => {
+  const files: Record<string, string> = { [JEV_FILE]: jevFile([jevCall('j1', 'judged', { tier: 'sonnet', effort: 'high' })]) }
+  const { clock, probes } = rig(on, files)
+  await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface: 'terminal', isInteractive: true } as never)
+  const callTool = $.tool.call as unknown as (input: unknown) => Promise<unknown>
+  const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'Pane', requestId: 'helpers', props: props(80) })
+  await clock.advance(1_000)
+  expect(probes.blits, 'a judged call is still: no blits').toBe(0)
+
+  files[JEV_FILE] = jevFile([jevCall('j1', 'judged', { tier: 'sonnet', effort: 'high' }), jevCall('j2', 'asking')])
+  await callTool({ tool: 'Agent', tool_use_id: 'a1', description: 'x', prompt: 'x', subagentType: 'general-purpose' })
+  await clock.advance(400)
+  expect(probes.blits, 'an asking call alone moves').toBeGreaterThan(0)
+  expect(probes.blits, 'and only the open call is painted: one blit a 40 ms frame').toBeLessThanOrEqual(10 + 1)
+
+  // A crab joins the same timer.
+  await $.agent.spawn({ tool_use_id: 's1', prompt: 'x', description: 'One', subagentType: 'general-purpose' } as never)
+  await clock.settle()
+  const withCrab = probes.blits
+  await clock.advance(400)
+  expect(probes.blits - withCrab, 'crab and Jev: at most two blits a frame from one timer').toBeLessThanOrEqual(2 * 10)
+  expect(probes.blits - withCrab, 'and both paint').toBeGreaterThan(10)
+
+  // Both end: the crab finishes, the call is judged.
+  await $.turn.complete({ answer: 'ok', agentId: 'agent-a1', reason: 'answer', durationMs: 1, isAborted: false, turnId: 't1' } as never)
+  files[JEV_FILE] = jevFile([jevCall('j1', 'judged', { tier: 'sonnet', effort: 'high' }), jevCall('j2', 'judged', { tier: 'sonnet', effort: 'high' })])
+  await clock.advance(2_100)
+  const after = probes.blits
+  await clock.advance(1_000)
+  expect(probes.blits, 'nothing moves: no blits').toBe(after)
+
+  // Motion off stops an open call too.
+  files[JEV_FILE] = jevFile([jevCall('j3', 'answered', { tier: 'opus', effort: 'high' })])
+  await callTool({ tool: 'Agent', tool_use_id: 'a2', description: 'x', prompt: 'x', subagentType: 'general-purpose' })
+  await clock.advance(400)
+  expect(probes.blits, 'answered moves').toBeGreaterThan(after)
+  await $.command.run({ command: 'helpers', args: 'motion off', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } } as never)
+  const off = probes.blits
+  await clock.advance(1_000)
+  expect(probes.blits, 'motion off: no blits').toBe(off)
+  void v
 })
