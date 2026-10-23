@@ -1,6 +1,6 @@
 import type { EngineInterface, Register, ThemeKey } from 'claude-code'
 
-import type { BandPlan, Helper, HelperPhase, PlanStatus, Step, StepKind } from '../types'
+import type { BandPlan, Helper, HelperPhase, JevCall, PlanStatus, Step, StepKind } from '../types'
 import { connectorName, splitTool } from './connectors'
 
 const NAME = 'helper-desk'
@@ -15,6 +15,9 @@ const OFF = { plugin: 'helper-desk', key: 'off' } as const
 const HIDDEN = { plugin: 'helper-desk', key: 'hidden' } as const
 const PLAN = { plugin: 'helper-desk', key: 'plan' } as const
 const SHIM = { plugin: 'helper-desk', key: 'shimmer' } as const
+const JEV = { plugin: 'helper-desk', key: 'jev' } as const
+const FOCUS = { plugin: 'helper-desk', key: 'focus' } as const
+const MOTION = { plugin: 'helper-desk', key: 'motion' } as const
 
 const TICK_MS = 300
 const POLL_MS = 2000
@@ -26,17 +29,22 @@ const TAG_W = 11
 const PET_W = 8
 const PET_PX_W = 48
 const PET_PX_H = 36
-// The terminal pet is Clawd as Claude Code draws it on its welcome screen: 9 columns plus a gap, 3 rows.
-const CLAWD_W = 10
-// Frame 0 stands; 1 raises both claws; 2 blinks; 3 looks right and shifts its feet.
-const CLAWD: string[][] = [
-  [' ▐▛███▜▌', '▝▜█████▛▘', '  ▘▘ ▝▝'],
-  ['▗▐▛███▜▌▖', ' ▜█████▛', '  ▘▘ ▝▝'],
-  [' ▐█████▌', '▝▜█████▛▘', '  ▘▘ ▝▝'],
-  [' ▐█▛█▜█▌', '▝▜█████▛▘', '  ▝▘ ▝▘'],
-]
-// A running pet changes frame every second tick: about every 600 ms.
-const FRAME_TICKS = 2
+// The terminal pet is a Raster of half-block cells drawn from the same pixel grid as the Svg pet:
+// wide (18 by 7 cells) from this body width up, else half that size.
+const PET_WIDE_FROM = 80
+const PET_COLS_WIDE = 18
+const PET_ROWS_WIDE = 7
+const PET_COLS_SMALL = 9
+const PET_ROWS_SMALL = 4
+// One cell of gap between the pet and the card text.
+const PET_GAP = 1
+// One timer repaints every running terminal pet.
+const FRAME_MS = 40
+const MOTION_KEY = 'motion'
+// How long a card stays lit after a peer button scrolls to it.
+const FOCUS_MS = 2000
+// Jev's live log, written by the jev-lab mod.
+const JEV_GRACE_MS = 6000
 
 // Functional colour follows the person's theme. Only the Svg drawings below keep hex.
 const ACCENT: ThemeKey = 'claude'
@@ -86,61 +94,186 @@ const hueOf = (hue: number) => HUES[((hue % HUES.length) + HUES.length) % HUES.l
 // Eyes and outline are the same on every pet.
 const EYE = '#2b1d16'
 const OUTLINE = '#2b1d16'
-const FRAMES = 4
 
 const span = (y: number, from: number, to: number): Px[] => Array.from({ length: to - from + 1 }, (_, i) => [from + i, y] as Px)
 
+// The crab on a 16 by 12 grid, in layers so a pose picks which show. It stands one pixel down;
+// the bob lifts the whole of it by one.
+const CORE: Px[] = [1, 2, 3, 4, 5, 6, 7].flatMap(y => span(y, 3, 12))
+const ARMS_DOWN: Px[] = [...span(4, 1, 2), ...span(5, 1, 2), ...span(4, 13, 14), ...span(5, 13, 14)]
+const ARMS_UP: Px[] = [[1, 2], [2, 2], [1, 3], [2, 3], [13, 2], [14, 2], [13, 3], [14, 3]]
+// The four phases of the leg shuffle: each leg pair steps in and out in turn.
+const LEG_X = [[4, 6, 9, 11], [3, 6, 10, 11], [3, 5, 10, 12], [4, 5, 9, 12]]
+const legPixels = (phase: number): Px[] => LEG_X[phase % 4]!.flatMap(x => [[x, 8], [x, 9]] as Px[])
+const EYES_LOW: Px[] = [[5, 4], [10, 4]]
+const EYES_TOP: Px[] = [[5, 3], [10, 3]]
+
+// The drawing grid: the crab at an offset of (1, 2), so its outline and its hop fit.
+const GRID_W = 18
+const GRID_H = 14
+
+const BOB_MS = 1400
+const LEG_MS = 120
+const CLAW_MS = 2300
+const BLINK_MS = 3300
+const BLINK_HOLD_MS = 150
+// Each pet starts this much later than the one before it in HUES order, so crabs don't move in lockstep.
+const PHASE_MS = 370
+
+const phaseOf = (hue: number) => (((hue % HUES.length) + HUES.length) % HUES.length) * PHASE_MS
+const wrap = (n: number, m: number) => ((n % m) + m) % m
+
+type Pose = { legs: number; up: boolean; blink: boolean; hop: number }
+const STILL: Pose = { legs: 0, up: false, blink: false, hop: 0 }
+
+/** The pose at `t` ms: an eased sine bob, a four-phase leg shuffle, claws on their own period, a blink now and then. */
+function poseAt(t: number, hue: number): Pose {
+  const u = t + phaseOf(hue)
+  const wave = 0.5 - 0.5 * Math.cos((2 * Math.PI * u) / BOB_MS)
+  const eased = wave * wave * (3 - 2 * wave)
+  const f = wrap(u, CLAW_MS) / CLAW_MS
+  return {
+    legs: Math.floor(wrap(u, LEG_MS * 4) / LEG_MS),
+    up: f < 0.1 || (f > 0.18 && f < 0.28),
+    blink: wrap(u, BLINK_MS) < BLINK_HOLD_MS,
+    hop: Math.round(eased),
+  }
+}
+
+/** What each pixel of the grid holds for a pose: 1 outline, 2 body, 3 eye, 0 clear. */
+function paint(pose: Pose): Uint8Array {
+  const grid = new Uint8Array(GRID_W * GRID_H)
+  const body: Px[] = [...CORE, ...(pose.up ? ARMS_UP : ARMS_DOWN), ...legPixels(pose.legs)]
+  const at = (x: number, y: number) => (y + 2 - pose.hop) * GRID_W + x + 1
+  for (const [x, y] of body) grid[at(x, y)] = 2
+  for (const [x, y] of body) {
+    for (const i of [at(x + 1, y), at(x - 1, y), at(x, y + 1), at(x, y - 1)]) if (i >= 0 && i < grid.length && !grid[i]) grid[i] = 1
+  }
+  for (const [x, y] of [...EYES_LOW, ...(pose.blink ? [] : EYES_TOP)]) grid[at(x, y)] = 3
+  return grid
+}
+
+const BASE64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+const DEFAULT_COLOR = 0x01000000
+
+// Uint8Array.toBase64 is outside the es2023 lib a mod's tsconfig names, so encode by hand.
+function toBase64(bytes: Uint8Array): string {
+  let out = ''
+  for (let i = 0; i < bytes.length; i += 3) {
+    const triplet = ((bytes[i] ?? 0) << 16) | ((bytes[i + 1] ?? 0) << 8) | (bytes[i + 2] ?? 0)
+    out += BASE64[(triplet >> 18) & 0x3f]! + BASE64[(triplet >> 12) & 0x3f]!
+    out += i + 1 < bytes.length ? BASE64[(triplet >> 6) & 0x3f]! : '='
+    out += i + 2 < bytes.length ? BASE64[triplet & 0x3f]! : '='
+  }
+  return out
+}
+
 /**
- * One frame of the crab on a 16 by 12 grid. Frame 0 stands; 1 hops up a pixel with
- * its legs moved; 2 stands and blinks; 3 raises both claws.
+ * The crab as `columns` by `rows` half-block cells (each cell two pixels tall), for a Raster or a
+ * blit: the pose at `t` ms in the pet's body colour. `still` draws the standing pose.
  */
-function crab(frame: number): { body: Px[]; eyes: Px[] } {
-  const dy = frame === 1 ? 0 : 1
-  const clawsUp = frame === 3
-  const body: Px[] = [
-    ...span(1, 3, 12),
-    ...span(2, 3, 12),
-    ...span(3, 3, 12),
-    ...(clawsUp ? span(4, 3, 12) : span(4, 1, 14)),
-    ...(clawsUp ? span(5, 3, 12) : span(5, 1, 14)),
-    ...span(6, 3, 12),
-    ...span(7, 3, 12),
-  ]
-  if (clawsUp) body.push([1, 2], [2, 2], [1, 3], [2, 3], [13, 2], [14, 2], [13, 3], [14, 3])
-  const legs = frame % 2 === 1 ? [3, 5, 10, 12] : [4, 6, 9, 11]
-  for (const x of legs) body.push([x, 8], [x, 9])
-  const eyes: Px[] = frame === 2 ? [[5, 4], [10, 4]] : [[5, 3], [5, 4], [10, 3], [10, 4]]
-  const move = (p: Px): Px => [p[0], p[1] + dy]
-  return { body: body.map(move), eyes: eyes.map(move) }
+export function drawCrab(columns: number, rows: number, t: number, hue: number, still = false): string {
+  const grid = paint(still ? STILL : poseAt(t, hue))
+  const body = Number.parseInt(hueOf(hue).color.slice(1), 16)
+  const ink = Number.parseInt(EYE.slice(1), 16)
+  const pixels = rows * 2
+  // A target pixel looks at the grid pixels it covers: an eye beats the body, the body the outline.
+  const sample = (x: number, y: number) => {
+    const x0 = Math.floor((x * GRID_W) / columns)
+    const x1 = Math.max(x0 + 1, Math.ceil(((x + 1) * GRID_W) / columns))
+    const y0 = Math.floor((y * GRID_H) / pixels)
+    const y1 = Math.max(y0 + 1, Math.ceil(((y + 1) * GRID_H) / pixels))
+    let best = 0
+    for (let gy = y0; gy < y1; gy += 1) {
+      for (let gx = x0; gx < x1; gx += 1) best = Math.max(best, grid[gy * GRID_W + gx] ?? 0)
+    }
+    return best === 2 ? body : best ? ink : DEFAULT_COLOR
+  }
+  // A DataView writes little-endian whatever the platform's byte order, as a Raster requires.
+  const bytes = new Uint8Array(columns * rows * 12)
+  const view = new DataView(bytes.buffer)
+  let offset = 0
+  for (let row = 0; row < rows; row += 1) {
+    for (let col = 0; col < columns; col += 1) {
+      const top = sample(col, row * 2)
+      const bottom = sample(col, row * 2 + 1)
+      let cell: [number, number, number]
+      if (top === DEFAULT_COLOR && bottom === DEFAULT_COLOR) cell = [0x20, DEFAULT_COLOR, DEFAULT_COLOR]
+      else if (top === DEFAULT_COLOR) cell = [0x2584, bottom, DEFAULT_COLOR]
+      else cell = [0x2580, top, bottom]
+      for (const word of cell) {
+        view.setUint32(offset, word, true)
+        offset += 4
+      }
+    }
+  }
+  return toBase64(bytes)
+}
+
+/** The pet's canvas for a body width: the cells its Raster asks for. */
+export function petCanvas(bodyColumns: number): { columns: number; rows: number } {
+  return bodyColumns >= PET_WIDE_FROM ? { columns: PET_COLS_WIDE, rows: PET_ROWS_WIDE } : { columns: PET_COLS_SMALL, rows: PET_ROWS_SMALL }
 }
 
 const petCache = new Map<string, string>()
 
-function petSvg(hue: number, frame: number) {
-  const key = `${hue % HUES.length}:${frame}`
+/**
+ * The Svg pet. A working one carries its motion as CSS keyframes (bob, four leg phases, claws,
+ * blink), so it moves with no redraws; any other is the standing pose, with no keyframes.
+ */
+function petSvg(hue: number, moving: boolean) {
+  const key = `${hue % HUES.length}:${moving}`
   const hit = petCache.get(key)
   if (hit) return hit
-  const { body, eyes } = crab(frame)
   const fill = hueOf(hue).color
-  const has = new Set(body.map(([x, y]) => `${x},${y}`))
-  // A one-pixel outline round the body, so every colour reads on light and dark.
-  const ring = new Set<string>()
-  for (const [x, y] of body) {
-    for (const [ax, ay] of [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]] as Px[]) {
-      const k = `${ax},${ay}`
-      if (!has.has(k)) ring.add(k)
+  const rect = (x: number, y: number, c: string) => `<rect x="${x + 1}" y="${y + 2}" width="1" height="1" fill="${c}"/>`
+  const keys = (list: Px[]) => new Set(list.map(([x, y]) => `${x},${y}`))
+  const core = keys(CORE)
+  // A layer is its pixels with a one-pixel outline round them, so every colour reads on light and dark.
+  const layer = (cls: string, pixels: Px[], delay = 0) => {
+    const own = keys(pixels)
+    const ring = new Set<string>()
+    for (const [x, y] of pixels) {
+      for (const [ax, ay] of [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]] as Px[]) {
+        const k = `${ax},${ay}`
+        if (!own.has(k) && !core.has(k)) ring.add(k)
+      }
     }
-  }
-  const rect = (x: number, y: number, c: string) => `<rect x="${x + 1}" y="${y + 1}" width="1" height="1" fill="${c}"/>`
-  const parts = [
-    ...[...ring].map(k => {
+    const edge = [...ring].map(k => {
       const [x, y] = k.split(',').map(Number)
       return rect(x!, y!, OUTLINE)
-    }),
-    ...body.map(([x, y]) => rect(x, y, fill)),
-    ...eyes.map(([x, y]) => rect(x, y, EYE)),
-  ]
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 18 13" width="${PET_PX_W}" height="${PET_PX_H}" shape-rendering="crispEdges">${parts.join('')}</svg>`
+    })
+    const attrs = `${cls ? ` class="${cls}"` : ''}${delay ? ` style="animation-delay:-${delay.toFixed(3)}s"` : ''}`
+    return `<g${attrs}>${edge.join('')}${pixels.map(([x, y]) => rect(x, y, fill)).join('')}</g>`
+  }
+  const eyes = (pixels: Px[], cls = '', delay = 0) =>
+    `<g${cls ? ` class="${cls}"` : ''}${delay ? ` style="animation-delay:-${delay.toFixed(3)}s"` : ''}>${pixels.map(([x, y]) => rect(x, y, EYE)).join('')}</g>`
+  let body: string
+  let style = ''
+  if (moving) {
+    const phase = phaseOf(hue) / 1000
+    const legSecs = (LEG_MS * 4) / 1000
+    body =
+      layer('', CORE) +
+      layer('dn', ARMS_DOWN, phase) +
+      layer('up', ARMS_UP, phase) +
+      [0, 1, 2, 3].map(n => layer(`lg lg${n}`, legPixels(n), phase + (legSecs * ((4 - n) % 4)) / 4)).join('') +
+      eyes(EYES_LOW) +
+      eyes(EYES_TOP, 'ey', phase)
+    style =
+      `<style>` +
+      `.bob{animation:bob ${BOB_MS / 1000}s ease-in-out infinite;animation-delay:-${phase.toFixed(3)}s}` +
+      `@keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-1px)}}` +
+      `.lg{opacity:0;animation:lg ${legSecs}s steps(1,end) infinite}@keyframes lg{0%{opacity:1}25%{opacity:0}100%{opacity:0}}` +
+      `.up{opacity:0;animation:up ${CLAW_MS / 1000}s steps(1,end) infinite}@keyframes up{0%{opacity:1}10%{opacity:0}18%{opacity:1}28%{opacity:0}100%{opacity:0}}` +
+      `.dn{animation:dn ${CLAW_MS / 1000}s steps(1,end) infinite}@keyframes dn{0%{opacity:0}10%{opacity:1}18%{opacity:0}28%{opacity:1}100%{opacity:1}}` +
+      `.ey{animation:ey ${BLINK_MS / 1000}s steps(1,end) infinite}@keyframes ey{0%{opacity:0}${((BLINK_HOLD_MS / BLINK_MS) * 100).toFixed(1)}%{opacity:1}100%{opacity:1}}` +
+      `@media (prefers-reduced-motion: reduce){.bob,.lg,.up,.dn,.ey{animation:none}.lg0,.dn,.ey{opacity:1}}` +
+      `</style>`
+  } else {
+    body = layer('', [...CORE, ...ARMS_DOWN, ...legPixels(0)]) + eyes([...EYES_LOW, ...EYES_TOP])
+  }
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${GRID_W} ${GRID_H}" width="${PET_PX_W}" height="${PET_PX_H}" shape-rendering="crispEdges">${style}<g${moving ? ' class="bob"' : ''}>${body}</g></svg>`
   petCache.set(key, svg)
   return svg
 }
@@ -159,6 +292,19 @@ let off = false
 let hidden = false
 let ticker: { cancel: () => void } | null = null
 let poller: { cancel: () => void } | null = null
+// The one timer that repaints every running terminal pet.
+let crabber: { cancel: () => void } | null = null
+let crabBusy = false
+let focusTimer: { cancel: () => void } | null = null
+// False while /helpers motion off holds the pets still; $.store keeps the choice.
+let motion = true
+// Each pet Raster the last draw mounted, by its key: what the frame timer blits.
+const pets = new Map<string, { requestId: string; id: string; columns: number; rows: number; hue: number }>()
+// Jev's calls as last read from its live file, and whether the poller still watches for changes.
+let jev: JevCall[] = []
+let jevRaw = ''
+let jevLive = false
+let jevGraceUntil = 0
 let switcher: { cancel: () => void } | null = null
 const strangers = new Set<string>()
 
@@ -296,7 +442,7 @@ function pickHue() {
   nextHue = hue + 1
   return hue
 }
-const copy = (hp: Helper): Helper => ({ ...hp, steps: hp.steps.map(st => ({ ...st })) })
+const copy = (hp: Helper): Helper => ({ ...hp, steps: hp.steps.map(st => ({ ...st })), sentTo: [...hp.sentTo], heardFrom: [...hp.heardFrom] })
 
 async function log($: EngineInterface, line: string) {
   try {
@@ -324,7 +470,50 @@ async function readCost($: EngineInterface) {
   }
 }
 
+const MAIN = 'main'
+const MAX_PEERS = 3
+const jevPath = () => `${home}/.claude/logs/jev-live/${sessionId}.json`
+const jevFinal = (c: JevCall) => c.phase === 'judged' || c.phase === 'skipped'
+const JEV_PHASES: readonly string[] = ['asking', 'answered', 'skipped', 'judging', 'judged']
+
+/** The calls in jev-lab's file; anything that is not a call is left out. */
+function parseJev(text: string): JevCall[] {
+  const json = JSON.parse(text) as { calls?: unknown }
+  if (!json || !Array.isArray(json.calls)) return []
+  return (json.calls as Record<string, unknown>[]).filter(c => c && typeof c.id === 'string' && JEV_PHASES.includes(String(c.phase))) as unknown as JevCall[]
+}
+
+/** Reads jev-lab's live file into the drawn copy; a missing or unreadable file is no cards. Stops the watch once every call is final. */
+async function pollJev($: EngineInterface) {
+  let calls: JevCall[] = []
+  try {
+    if (home && sessionId && (await $.fs.exists(jevPath()))) calls = parseJev(String(await $.fs.read(jevPath())))
+  } catch {
+    calls = []
+  }
+  const raw = JSON.stringify(calls)
+  if (raw !== jevRaw) {
+    jevRaw = raw
+    jev = calls
+    await $.state.set(JEV, calls)
+  }
+  const live = calls.some(c => !jevFinal(c)) || (await $.clock.now()) < jevGraceUntil
+  if (live !== jevLive) {
+    jevLive = live
+    syncTimers($)
+  }
+}
+
+/** A new Agent dispatch: watch the file again. Jev writes its first row a moment after the call, so the watch holds on for a few seconds. */
+async function watchJev($: EngineInterface) {
+  jevGraceUntil = (await $.clock.now()) + JEV_GRACE_MS
+  jevLive = true
+  syncTimers($)
+  await pollJev($)
+}
+
 async function poll($: EngineInterface) {
+  await pollJev($)
   if (!working()) return
   const list = await $.agent.list()
   const now = await $.clock.now()
@@ -349,19 +538,51 @@ async function poll($: EngineInterface) {
   else await readCost($)
 }
 
+const runningPets = () => [...pets.values()].some(p => helpers.find(hp => hp.id === p.id)?.phase === 'working')
+
+/** One 40 ms frame for every running pet; a denied blit means that canvas is gone, so it is not painted again until the next draw. */
+async function crabFrame($: EngineInterface) {
+  if (crabBusy) return
+  crabBusy = true
+  try {
+    const t = await $.clock.now()
+    for (const [key, pet] of [...pets]) {
+      if (helpers.find(hp => hp.id === pet.id)?.phase !== 'working') continue
+      const { columns, rows } = pet
+      const result = await $.ui.blit({ requestId: pet.requestId, key, cells: drawCrab(columns, rows, t, pet.hue), columns, rows })
+      if (result.deny !== undefined) pets.delete(key)
+    }
+  } finally {
+    crabBusy = false
+  }
+  syncTimers($)
+}
+
 function syncTimers($: EngineInterface) {
   if (working() && !off) {
     ticker ??= $.clock.every(TICK_MS, () => {
       void tick($).catch(() => undefined)
     })
+  } else {
+    ticker?.cancel()
+    ticker = null
+  }
+  if ((working() || jevLive) && !off) {
     poller ??= $.clock.every(POLL_MS, () => {
       void poll($).catch(err => log($, `poll: ${String(err)}`))
     })
   } else {
-    ticker?.cancel()
     poller?.cancel()
-    ticker = null
     poller = null
+  }
+  // Pets move only while a helper works, motion is on, and a draw has mounted one.
+  if (motion && !off && runningPets()) {
+    crabber ??= $.clock.every(FRAME_MS, () => {
+      void crabFrame($).catch(err => log($, `crab: ${String(err)}`))
+    })
+  } else {
+    crabber?.cancel()
+    crabber = null
   }
 }
 
@@ -374,13 +595,14 @@ async function publish($: EngineInterface) {
   syncTimers($)
 }
 
-async function addHelper($: EngineInterface, id: string, description: string, type: string, model: string) {
+async function addHelper($: EngineInterface, id: string, description: string, type: string, model: string, name = '') {
   const known = helpers.find(hp => hp.id === id)
   if (known) {
     // Found first through its own tool calls: fill in what the spawn knows.
     if (description) known.description = description
     if (type) known.type = type
     if (model && !known.model) known.model = model
+    if (name && !known.name) known.name = name
     await publish($)
     return
   }
@@ -390,6 +612,9 @@ async function addHelper($: EngineInterface, id: string, description: string, ty
     id,
     description: description || 'Subagent',
     type: type || 'subagent',
+    name,
+    sentTo: [],
+    heardFrom: [],
     model,
     effort: '',
     phase: 'working',
@@ -418,7 +643,8 @@ async function adopt($: EngineInterface, id: string) {
     strangers.add(id)
     return
   }
-  await addHelper($, id, a.description, a.type, '')
+  // A teammate's address reads <name>@<team>.
+  await addHelper($, id, a.description, a.type, '', a.teammateId?.split('@')[0] ?? '')
 }
 
 async function noteTool($: EngineInterface, id: string, step: Step) {
@@ -512,6 +738,49 @@ async function setHidden($: EngineInterface, value: boolean) {
   await $.state.set(HIDDEN, hidden)
   syncShimmer($)
   if (value) await $.ui.close({ id: PANE }).catch(() => undefined)
+}
+
+/** The helper an address names: its id, its name, or its `<name>@<team>` address. */
+function helperNamed(address: string) {
+  const q = address.trim().toLowerCase()
+  const bare = q.split('@')[0]
+  return helpers.find(hp => hp.id.toLowerCase() === q || (!!hp.name && [q, bare].includes(hp.name.toLowerCase())))
+}
+
+const remember = (list: string[], id: string) => [...list.filter(x => x !== id), id].slice(-MAX_PEERS)
+
+/** A message left `from` (a helper id, or undefined for the main chat) for `to` (a name or id; one no helper carries is the main chat). */
+async function noteSend($: EngineInterface, from: string | undefined, to: string) {
+  const sender = from === undefined ? MAIN : helpers.find(hp => hp.id === from)?.id
+  if (!sender) return
+  const receiver = helperNamed(to)?.id ?? MAIN
+  if (sender === receiver) return
+  const a = helpers.find(hp => hp.id === sender)
+  const b = helpers.find(hp => hp.id === receiver)
+  if (a) a.sentTo = remember(a.sentTo, receiver)
+  if (b) b.heardFrom = remember(b.heardFrom, sender)
+  if (a || b) await publish($)
+}
+
+/** Scrolls the pane to a helper's card and lights its border for a moment. */
+async function gotoHelper($: EngineInterface, id: string) {
+  if (!helpers.some(hp => hp.id === id)) return false
+  const now = await $.clock.now()
+  focusTimer?.cancel()
+  focusTimer = $.clock.after(FOCUS_MS, () => {
+    focusTimer = null
+    void $.state.set(FOCUS, null).catch(() => undefined)
+  })
+  await $.state.set(FOCUS, { id, until: now + FOCUS_MS })
+  await $.ui.scroll({ to: { key: `card-${id}` }, in: PANE, block: 'center' }).catch(err => log($, `scroll: ${String(err)}`))
+  return true
+}
+
+async function setMotion($: EngineInterface, value: boolean) {
+  motion = value
+  await $.store.set(MOTION_KEY, value)
+  await $.state.set(MOTION, value)
+  syncTimers($)
 }
 
 const GROUPS = ['running', 'finished', 'stopped']
@@ -889,7 +1158,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     home = $.plugin.root.replace(/\\/g, '/').split('/.claude/')[0] ?? ''
     sessionId = await $.session.id().catch(() => '')
-    await $.command.register({ name: 'helpers', description: 'Show the Helper Desk: the task list and one live card per subagent', immediate: true })
+    await $.command.register({ name: 'helpers', description: 'Show the Helper Desk: the task list and one live card per subagent', argumentHint: '[hide|fold|steps|goto|motion]', immediate: true })
     await $.tool.register({
       name: 'plan',
       description:
@@ -917,8 +1186,11 @@ export const register: Register = on => {
       // In front, not behind ToolSearch: a hidden tool never gets called.
       isDeferred: false,
     }).catch(err => log($, `register plan tool: ${String(err)}`))
+    motion = (await $.store.get(MOTION_KEY).catch(() => undefined)) !== false
+    await $.state.set(MOTION, motion)
     await readSwitch($)
     await loadPlan($)
+    await pollJev($)
     switcher ??= $.clock.every(SWITCH_MS, () => {
       void switchPoll($).catch(err => log($, `switch: ${String(err)}`))
     })
@@ -927,7 +1199,11 @@ export const register: Register = on => {
       const { value } = await $.state.get(HELPERS)
       if (value?.length) {
         // A copy from before body colours has no hue: its seat picks one.
-        helpers = value.map(hp => ({ ...copy(hp), hue: typeof hp.hue === 'number' ? hp.hue : hp.seat % HUES.length }))
+        helpers = value.map(hp => ({
+          ...copy({ ...hp, sentTo: hp.sentTo ?? [], heardFrom: hp.heardFrom ?? [] }),
+          name: hp.name ?? '',
+          hue: typeof hp.hue === 'number' ? hp.hue : hp.seat % HUES.length,
+        }))
         seats = Math.max(...helpers.map(hp => hp.seat)) + 1
         nextHue = (Math.max(...helpers.map(hp => hp.hue)) + 1) % HUES.length
         syncTimers($)
@@ -948,6 +1224,17 @@ export const register: Register = on => {
       if (!GROUPS.includes(arg)) return { text: `Usage: /helpers fold ${GROUPS.join('|')}` }
       await toggleIn($, 'folded', arg)
       return { text: `Toggled the ${arg} group.` }
+    }
+    if (verb === 'goto') {
+      const rest = String((e as { args?: string }).args ?? '').trim().slice(verb.length).trim()
+      const hp = helperNamed(rest) ?? helpers.find(x => x.description.toLowerCase() === rest.toLowerCase())
+      if (!hp || !(await gotoHelper($, hp.id))) return { text: 'Usage: /helpers goto <helper name or agent id>' }
+      return { text: `Scrolled to ${hp.name || hp.description}.` }
+    }
+    if (verb === 'motion') {
+      if (arg !== 'on' && arg !== 'off') return { text: 'Usage: /helpers motion on|off' }
+      await setMotion($, arg === 'on')
+      return { text: `Pet motion ${arg}.` }
     }
     if (verb === 'steps') {
       const { value: list = [] } = await $.state.get(HELPERS)
@@ -981,6 +1268,11 @@ export const register: Register = on => {
       await toggleIn($, 'open', e.element.slice('steps-'.length))
       return { element: e.element }
     }
+    // goto|<card>|<to or from>|<peer>: a peer chip on a card.
+    if (e.element.startsWith('goto|')) {
+      await gotoHelper($, e.element.split('|')[3] ?? '')
+      return { element: e.element }
+    }
     if (e.element.startsWith('group-')) {
       await toggleIn($, 'folded', e.element.slice('group-'.length))
       return { element: e.element }
@@ -991,12 +1283,20 @@ export const register: Register = on => {
   on('agent.spawn', async ($, e, next) => {
     const r = await next(e)
     if (off) return r
+    void watchJev($).catch(err => log($, `jev: ${String(err)}`))
     const id = (r as { agentId?: string }).agentId
     if (id) {
-      void addHelper($, id, e.description || 'Subagent', e.subagentType || 'subagent', shortModel(e.model ?? r.model ?? '')).catch(err =>
+      void addHelper($, id, e.description || 'Subagent', e.subagentType || 'subagent', shortModel(e.model ?? r.model ?? ''), e.name ?? '').catch(err =>
         log($, `spawn: ${String(err)}`),
       )
     }
+    return r
+  })
+
+  // Who talks to whom: never blocks, and a failure to note it never reaches the message.
+  on('session.send', async ($, e, next) => {
+    const r = await next(e)
+    if (!off && r.isDelivered) void noteSend($, e.agentId, e.to).catch(err => log($, `send: ${String(err)}`))
     return r
   })
 
@@ -1020,6 +1320,8 @@ export const register: Register = on => {
       return { result: said } as never
     }
     if (off) return next(e)
+    // Jev rates an Agent dispatch before it runs: watch its file again.
+    if (!id && (tool === 'Agent' || tool === 'Task')) void watchJev($).catch(err => log($, `jev: ${String(err)}`))
     if (id) {
       void noteTool($, id, describe(tool, args)).catch(err => log($, `tool: ${String(err)}`))
       return next(e)
@@ -1095,15 +1397,21 @@ export const register: Register = on => {
     if (isOff || off) return next(e)
     const els = $.ui.resolve(e)
     const { Box, Text, Button } = els
-    // Svg draws on desktop, the editor and mobile; the terminal gets a glyph.
+    // Svg draws on desktop, the editor and mobile; the terminal gets a Raster.
     const Svg = e.surface !== 'terminal' && 'Svg' in els ? els.Svg : null
+    const Raster = e.surface === 'terminal' && 'Raster' in els ? els.Raster : null
     const { value: list = [] } = await $.state.get(HELPERS)
     const { value: clk = { tick: 0, now: 0 } } = await $.state.get(CLOCK)
+    const { value: calls = [] } = await $.state.get(JEV)
+    const { value: focus = null } = await $.state.get(FOCUS)
+    const { value: moves = true } = await $.state.get(MOTION)
+    const now = await $.clock.now()
     const { value: view = { open: [], folded: [] } } = await $.state.get(VIEW)
     const { value: cost = { usd: null } } = await $.state.get(COST)
     const width = Math.max(32, e.props.bodyColumns)
     // Inside a card: its border and padding take 4 columns, the pet petW more.
-    const petW = Svg ? PET_W : CLAWD_W
+    const canvas = petCanvas(e.props.bodyColumns)
+    const petW = Svg ? PET_W : canvas.columns + PET_GAP
     const cw = width - 4 - petW
 
     const { running, finished, stopped } = byGroup(list)
@@ -1119,26 +1427,56 @@ export const register: Register = on => {
     }
     const tileW = tiles.length ? Math.floor((width - (tiles.length - 1)) / tiles.length) : width
 
-    // A running pet steps through its frames on the clock tick; a finished one stands still.
-    const frameOf = (hp: Helper) => (hp.phase === 'working' ? Math.floor(clk.tick / FRAME_TICKS) % FRAMES : 0)
+    // The frame timer repaints the Rasters this draw mounts; a stale mount's entries go.
+    for (const [key, pet] of pets) if (pet.requestId === e.requestId) pets.delete(key)
 
+    // Only a working pet moves, and only with motion on; any other is the standing pose.
     const pet = (hp: Helper) => {
       const hue = hueOf(hp.hue)
-      const frame = frameOf(hp)
+      const moving = moves && hp.phase === 'working'
       if (Svg) {
         return (
           <Box key={`pet-${hp.id}`} width={PET_W} flexShrink={0}>
-            <Svg source={petSvg(hp.hue, frame)} alt={`Claude crab, ${hue.name}`} width={PET_PX_W} height={PET_PX_H} />
+            <Svg source={petSvg(hp.hue, moving)} alt={`Claude crab, ${hue.name}`} width={PET_PX_W} height={PET_PX_H} />
           </Box>
         )
       }
+      if (!Raster) return null
+      const { columns, rows } = canvas
+      pets.set(`crab-${hp.id}`, { requestId: e.requestId, id: hp.id, columns, rows, hue: hp.hue })
       return (
-        <Box key={`pet-${hp.id}`} width={petW} flexShrink={0} flexDirection="column">
-          {CLAWD[frame]!.map((row, i) => (
-            <Text key={`clawd-${hp.id}-${i}`} color={hue.key}>
-              {row}
-            </Text>
-          ))}
+        <Box key={`pet-${hp.id}`} width={petW} flexShrink={0}>
+          <Raster key={`crab-${hp.id}`} columns={columns} rows={rows} cells={drawCrab(columns, rows, now, hp.hue, !moving)} />
+        </Box>
+      )
+    }
+
+    // A peer chip: a button that scrolls to that helper's card, or plain text for the main chat.
+    const byId = new Map(list.map(hp => [hp.id, hp]))
+    const chips = (hp: Helper, dir: 'to' | 'from', cw: number) => {
+      const peers = (dir === 'to' ? hp.sentTo : hp.heardFrom).filter(id => id === MAIN || byId.has(id)).reverse()
+      if (!peers.length) return null
+      const arrow = dir === 'to' ? '→' : '←'
+      const mainW = peers.includes(MAIN) ? `${arrow} main chat`.length : 0
+      const others = peers.length - (mainW ? 1 : 0)
+      const each = others ? Math.max(6, Math.floor((cw - mainW - (peers.length - 1)) / others)) : 0
+      return (
+        <Box key={`links-${dir}-${hp.id}`} flexDirection="row" gap={1} width={cw}>
+          {peers.map(id => {
+            if (id === MAIN) {
+              return (
+                <Text key={`peer-${dir}-${hp.id}-main`} dimColor wrap="truncate-end">
+                  {`${arrow} main chat`}
+                </Text>
+              )
+            }
+            const peer = byId.get(id)!
+            return (
+              <Button key={`goto|${hp.id}|${dir}|${id}`} plain dimColor onPress={() => undefined}>
+                {cut(`${arrow} ${peer.name || peer.description}`, each)}
+              </Button>
+            )
+          })}
         </Box>
       )
     }
@@ -1146,6 +1484,8 @@ export const register: Register = on => {
     const card = (hp: Helper) => {
       const hue = hueOf(hp.hue)
       const live = hp.phase === 'working'
+      // A peer button just scrolled here: the border takes the accent for a moment.
+      const lit = focus?.id === hp.id && focus.until > now
       const isOpen = view.open.includes(hp.id)
       const mark = live ? '●' : hp.phase === 'done' ? '✓' : '✗'
       const markColor = hp.phase === 'failed' ? BAD : GOOD
@@ -1176,8 +1516,8 @@ export const register: Register = on => {
           width={width}
           marginBottom={1}
           borderStyle="round"
-          borderColor={hp.phase === 'failed' ? BAD : hue.key}
-          borderDimColor={!live}
+          borderColor={lit ? ACCENT : hp.phase === 'failed' ? BAD : hue.key}
+          borderDimColor={!live && !lit}
           paddingX={1}
           gap={0}
         >
@@ -1214,6 +1554,8 @@ export const register: Register = on => {
                   {cut(`  ${st.live}`, cw)}
                 </Text>
               ))}
+            {chips(hp, 'to', cw)}
+            {chips(hp, 'from', cw)}
             {Svg ? (
               <Box key={`bar-${hp.id}`} width={cw}>
                 <Svg
@@ -1285,6 +1627,49 @@ export const register: Register = on => {
       )
     }
 
+    // One compact card per Jev call: the badge and its pick, what ran, and the judge's verdict.
+    const jevCard = (c: JevCall) => {
+      const live = c.phase === 'asking' || c.phase === 'judging'
+      const jw = width - 4
+      const pct = c.tier && c.probs ? ` ${Math.round((c.probs[c.tier] ?? 0) * 100)}%` : ''
+      const head =
+        c.phase === 'asking'
+          ? 'asking…'
+          : c.phase === 'skipped'
+            ? `skipped${c.skipReason ? ` (${c.skipReason})` : ''}`
+            : c.tier
+              ? `${c.tier}${pct}${c.effort ? ` · ${c.effort}` : ''}`
+              : 'no pick'
+      const ran = `${c.phase === 'asking' ? 'chose' : 'ran'} ${c.chosen}${c.chosenEffort ? ` · ${c.chosenEffort}` : ''}`
+      const verdict = c.phase === 'judging' ? 'judging…' : c.judge ? `judge (${c.judge.model}): ${c.judge.tier} · ${c.judge.effort} — ${c.judge.reason}` : ''
+      const text = `${cut(c.description, Math.max(8, jw - 6 - head.length - 4))} → ${head}`
+      return (
+        <Box key={`jev-${c.id}`} flexDirection="column" width={width} borderStyle="round" borderColor="suggestion" borderDimColor={!live} paddingX={1} marginBottom={1}>
+          <Box key={`jev-head-${c.id}`} flexDirection="row" gap={1} width={jw}>
+            <Text weight="bold" color={INK} backgroundColor="suggestion">
+              {' Jev '}
+            </Text>
+            <Text weight={live ? 'bold' : undefined} color={live ? 'suggestion' : undefined} wrap="truncate-end">
+              {`· ${text}`}
+            </Text>
+          </Box>
+          <Text key={`jev-ran-${c.id}`} dimColor wrap="truncate-end">
+            {cut(ran, jw)}
+          </Text>
+          {verdict ? (
+            <Text key={`jev-verdict-${c.id}`} color={c.phase === 'judging' ? 'suggestion' : undefined} dimColor={c.phase !== 'judging'} wrap="truncate-end">
+              {cut(verdict, jw)}
+            </Text>
+          ) : null}
+        </Box>
+      )
+    }
+
+    // The groups build the cards, and the cards register their pets: draw them before the frame timer looks.
+    const groups = [group('running', 'Running', running, GOOD, INK), group('finished', 'Finished', finished, WARN, INK), group('stopped', 'Stopped', stopped, BAD, INK)]
+    // Starts the frame timer when this draw mounted the first running pet; a no-op otherwise.
+    syncTimers($)
+
     return (
       <Box flexDirection="column" width={width}>
         <Box key="header" flexDirection="row" justifyContent="space-between" gap={1} width={width} marginBottom={1}>
@@ -1307,13 +1692,12 @@ export const register: Register = on => {
             ))}
           </Box>
         ) : null}
+        {calls.map(jevCard)}
         {list.length ? null : <Text dimColor>Cards show up here when Claude starts a subagent.</Text>}
-        {group('running', 'Running', running, GOOD, INK)}
-        {group('finished', 'Finished', finished, WARN, INK)}
-        {group('stopped', 'Stopped', stopped, BAD, INK)}
+        {groups}
         {e.props.isFocused === false ? (
           <Text key="focus-hint" dimColor wrap="truncate-end">
-            Focus this pane to press its buttons, or use /helpers hide, fold or steps.
+            Focus this pane to press its buttons, or use /helpers hide, fold, steps, goto or motion.
           </Text>
         ) : null}
       </Box>
@@ -1325,8 +1709,12 @@ export const register: Register = on => {
     if (off || e.props.hasSurvey) return next(e)
     const { value: isOff = false } = await $.state.get(OFF)
     const { value: isHidden = false } = await $.state.get(HIDDEN)
-    const { value: p = null } = await $.state.get(PLAN)
-    if (isOff || isHidden || hidden || !p || !p.shown || !p.steps.length) return next(e)
+    const { value: planned = null } = await $.state.get(PLAN)
+    const { value: calls = [] } = await $.state.get(JEV)
+    const asking = calls.filter(c => c.phase === 'asking')
+    const showPlan = !!planned && planned.shown && planned.steps.length > 0
+    if (isOff || isHidden || hidden || (!showPlan && !asking.length)) return next(e)
+    const p: BandPlan = showPlan ? planned : { title: '', steps: [], shown: false }
     // The other mods' bands draw above this one. Claude Code's own placeholder is never nested.
     const drawn = await Promise.resolve(next(e)).catch(() => null)
     const rest = drawn && typeof drawn === 'object' && (drawn as { type?: string }).type !== 'engine' ? drawn : null
@@ -1353,6 +1741,17 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         {rest as never}
+        {asking.length ? (
+          <Box key="jev-asking" flexDirection="row" gap={1}>
+            <Text weight="bold" color={INK} backgroundColor="suggestion">
+              {' Jev '}
+            </Text>
+            <Text color="suggestion" wrap="truncate-end">
+              {cut(asking.length === 1 ? `asking about ${asking[0]!.description}…` : `asking about ${asking.length} calls…`, Math.max(8, w - 6))}
+            </Text>
+          </Box>
+        ) : null}
+        {showPlan ? (
         <Box key="plan-band" flexDirection="column">
           <Box key="plan-row" flexDirection="row" gap={1}>
             <Text color={PURPLE}>●</Text>
@@ -1392,6 +1791,7 @@ export const register: Register = on => {
             </Text>
           ) : null}
         </Box>
+        ) : null}
       </Box>
     )
   })

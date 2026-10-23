@@ -18,6 +18,11 @@ export type Helper = {
   description: string
   /** The agent type: general-purpose, Explore, a plugin's agent. */
   type: string
+  /** The Agent tool's `name` input, empty when none was given. */
+  name: string
+  /** Peers this helper sent a message to and heard from, newest last, at most 3 each. A peer is a helper id or "main". */
+  sentTo: string[]
+  heardFrom: string[]
   /** Display model ("Opus 5.5"), empty when not known yet. */
   model: string
   /** Effort the engine asked for on its last step, empty when not known. */
@@ -39,6 +44,24 @@ export type Helper = {
   seat: number
   /** Which of the 8 body colours its pet wears; running helpers never share one while there are 8 or fewer. */
   hue: number
+}
+
+export type JevPhase = 'asking' | 'answered' | 'skipped' | 'judging' | 'judged'
+
+/** One Jev call as jev-lab writes it to ~/.claude/logs/jev-live/<sessionId>.json. */
+export type JevCall = {
+  id: string
+  at: number
+  description: string
+  subagentType: string
+  chosen: string
+  chosenEffort: string
+  phase: JevPhase
+  skipReason?: 'restricted' | 'rubric-unreadable' | 'timeout' | 'error'
+  tier?: 'haiku' | 'sonnet' | 'opus'
+  effort?: string
+  probs?: { haiku: number; sonnet: number; opus: number }
+  judge?: { tier: string; effort: string; model: string; reason: string }
 }
 
 export type PlanStatus = 'pending' | 'in_progress' | 'completed'
@@ -69,6 +92,12 @@ declare module 'claude-code' {
       plan: BandPlan | null
       /** Shimmer tick for the step in progress; it counts only while one is in progress. */
       shimmer: number
+      /** The Jev calls to draw, newest last; empty without a readable file. */
+      jev: JevCall[]
+      /** The helper card the pane just scrolled to, highlighted until `until` (clock ms). */
+      focus: { id: string; until: number } | null
+      /** False when /helpers motion off stops the pets; kept in $.store across sessions. */
+      motion: boolean
     }
   }
 }
