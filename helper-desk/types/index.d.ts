@@ -62,6 +62,8 @@ export type JevCall = {
   effort?: string
   probs?: { haiku: number; sonnet: number; opus: number }
   judge?: { tier: string; effort: string; model: string; reason: string }
+  /** Set by the mod: the call has been open past the cap, so it no longer reads as live. */
+  stale?: boolean
 }
 
 export type PlanStatus = 'pending' | 'in_progress' | 'completed'

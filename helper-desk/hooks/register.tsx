@@ -476,28 +476,70 @@ const jevPath = () => `${home}/.claude/logs/jev-live/${sessionId}.json`
 const jevFinal = (c: JevCall) => c.phase === 'judged' || c.phase === 'skipped'
 const JEV_PHASES: readonly string[] = ['asking', 'answered', 'skipped', 'judging', 'judged']
 
-/** The calls in jev-lab's file; anything that is not a call is left out. */
+// jev-lab judges about 90 s after a subagent stops; a call still open after this long is stale, not live.
+const JEV_STALE_MS = 10 * 60_000
+const jevStale = (c: JevCall, now: number) => !jevFinal(c) && now - c.at > JEV_STALE_MS
+
+const str = (v: unknown) => (typeof v === 'string' ? v : undefined)
+const obj = (v: unknown) => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined)
+
+/** The calls in jev-lab's file, each rebuilt from the fields that have the right type; a row without an id, a phase or a description is left out. */
 function parseJev(text: string): JevCall[] {
   const json = JSON.parse(text) as { calls?: unknown }
   if (!json || !Array.isArray(json.calls)) return []
-  return (json.calls as Record<string, unknown>[]).filter(c => c && typeof c.id === 'string' && JEV_PHASES.includes(String(c.phase))) as unknown as JevCall[]
+  const out: JevCall[] = []
+  for (const raw of json.calls as unknown[]) {
+    const c = obj(raw)
+    const id = str(c?.id)
+    const phase = str(c?.phase)
+    const description = str(c?.description)
+    if (!c || !id || !phase || !JEV_PHASES.includes(phase) || description === undefined) continue
+    const probs = obj(c.probs)
+    const judge = obj(c.judge)
+    const tier = str(c.tier)
+    const call: JevCall = {
+      id,
+      at: typeof c.at === 'number' ? c.at : 0,
+      description,
+      subagentType: str(c.subagentType) ?? '',
+      chosen: str(c.chosen) ?? '',
+      chosenEffort: str(c.chosenEffort) ?? '',
+      phase: phase as JevCall['phase'],
+    }
+    const skipReason = str(c.skipReason)
+    if (skipReason) call.skipReason = skipReason as JevCall['skipReason']
+    if (tier === 'haiku' || tier === 'sonnet' || tier === 'opus') call.tier = tier
+    const effort = str(c.effort)
+    if (effort) call.effort = effort
+    if (probs && ['haiku', 'sonnet', 'opus'].every(k => typeof probs[k] === 'number')) call.probs = probs as JevCall['probs']
+    if (judge && ['tier', 'effort', 'model', 'reason'].every(k => typeof judge[k] === 'string')) call.judge = judge as JevCall['judge']
+    out.push(call)
+  }
+  return out
 }
 
-/** Reads jev-lab's live file into the drawn copy; a missing or unreadable file is no cards. Stops the watch once every call is final. */
+/**
+ * Reads jev-lab's live file into the drawn copy. A missing file is no cards; a read that fails or
+ * parses badly (the file is rewritten without a swap) keeps what was drawn, so the next poll tries again.
+ * Stops the watch once every call is final or stale.
+ */
 async function pollJev($: EngineInterface) {
-  let calls: JevCall[] = []
+  let calls = jev
   try {
-    if (home && sessionId && (await $.fs.exists(jevPath()))) calls = parseJev(String(await $.fs.read(jevPath())))
+    calls = home && sessionId && (await $.fs.exists(jevPath())) ? parseJev(String(await $.fs.read(jevPath()))) : []
   } catch {
-    calls = []
+    // A torn read: keep the last good copy and the watch.
   }
-  const raw = JSON.stringify(calls)
+  const now = await $.clock.now()
+  // The mark rides in the drawn copy, so a call going stale redraws its card.
+  const marked: JevCall[] = calls.map(({ stale: _old, ...c }) => (jevStale(c, now) ? { ...c, stale: true } : c))
+  const raw = JSON.stringify(marked)
   if (raw !== jevRaw) {
     jevRaw = raw
-    jev = calls
-    await $.state.set(JEV, calls)
+    jev = marked
+    await $.state.set(JEV, marked)
   }
-  const live = calls.some(c => !jevFinal(c)) || (await $.clock.now()) < jevGraceUntil
+  const live = marked.some(c => !jevFinal(c) && !c.stale) || now < jevGraceUntil
   if (live !== jevLive) {
     jevLive = live
     syncTimers($)
@@ -547,6 +589,8 @@ async function crabFrame($: EngineInterface) {
   try {
     const t = await $.clock.now()
     for (const [key, pet] of [...pets]) {
+      // Motion may turn off, or the timer stop, while an earlier blit is in flight.
+      if (!motion || off || !crabber) break
       if (helpers.find(hp => hp.id === pet.id)?.phase !== 'working') continue
       const { columns, rows } = pet
       const result = await $.ui.blit({ requestId: pet.requestId, key, cells: drawCrab(columns, rows, t, pet.hue), columns, rows })
@@ -607,8 +651,8 @@ async function addHelper($: EngineInterface, id: string, description: string, ty
     return
   }
   const wasIdle = working() === 0
-  const now = await $.clock.now()
-  helpers.push({
+  // Pushed before any await, so a session.send right after the spawn finds it.
+  const added: Helper = {
     id,
     description: description || 'Subagent',
     type: type || 'subagent',
@@ -618,7 +662,7 @@ async function addHelper($: EngineInterface, id: string, description: string, ty
     model,
     effort: '',
     phase: 'working',
-    startedAt: now,
+    startedAt: 0,
     endedAt: 0,
     count: 0,
     steps: [],
@@ -627,8 +671,10 @@ async function addHelper($: EngineInterface, id: string, description: string, ty
     hasUsage: false,
     seat: seats,
     hue: pickHue(),
-  })
+  }
+  helpers.push(added)
   seats += 1
+  added.startedAt = await $.clock.now()
   await publish($)
   // The pane opens by itself when a new round of helpers starts.
   if (wasIdle && !hidden) void $.ui.open({ id: PANE, title: TITLE }).catch(err => log($, `open: ${String(err)}`))
@@ -744,17 +790,22 @@ async function setHidden($: EngineInterface, value: boolean) {
 function helperNamed(address: string) {
   const q = address.trim().toLowerCase()
   const bare = q.split('@')[0]
-  return helpers.find(hp => hp.id.toLowerCase() === q || (!!hp.name && [q, bare].includes(hp.name.toLowerCase())))
+  const hits = helpers.filter(hp => hp.id.toLowerCase() === q || (!!hp.name && [q, bare].includes(hp.name.toLowerCase())))
+  // A name can be reused: the one working now, else the newest.
+  return hits.findLast(hp => hp.phase === 'working') ?? hits[hits.length - 1]
 }
+
+// What the model calls the main chat in a send's `to`; any other address no helper carries is left unrecorded.
+const MAIN_ADDRESSES = ['main', 'team-lead', 'lead', 'user']
 
 const remember = (list: string[], id: string) => [...list.filter(x => x !== id), id].slice(-MAX_PEERS)
 
-/** A message left `from` (a helper id, or undefined for the main chat) for `to` (a name or id; one no helper carries is the main chat). */
+/** A message left `from` (a helper id, or undefined for the main chat) for `to` (a name or id; the main chat's names count, any other address is not recorded). */
 async function noteSend($: EngineInterface, from: string | undefined, to: string) {
   const sender = from === undefined ? MAIN : helpers.find(hp => hp.id === from)?.id
   if (!sender) return
-  const receiver = helperNamed(to)?.id ?? MAIN
-  if (sender === receiver) return
+  const receiver = helperNamed(to)?.id ?? (MAIN_ADDRESSES.includes(to.trim().toLowerCase()) ? MAIN : undefined)
+  if (!receiver || sender === receiver) return
   const a = helpers.find(hp => hp.id === sender)
   const b = helpers.find(hp => hp.id === receiver)
   if (a) a.sentTo = remember(a.sentTo, receiver)
@@ -764,7 +815,12 @@ async function noteSend($: EngineInterface, from: string | undefined, to: string
 
 /** Scrolls the pane to a helper's card and lights its border for a moment. */
 async function gotoHelper($: EngineInterface, id: string) {
-  if (!helpers.some(hp => hp.id === id)) return false
+  const target = helpers.find(hp => hp.id === id)
+  if (!target) return false
+  // A card in a folded group is not drawn: open the group first.
+  const group = target.phase === 'working' ? 'running' : target.phase === 'done' ? 'finished' : 'stopped'
+  const { value: view = { open: [], folded: [] } } = await $.state.get(VIEW)
+  if (view.folded.includes(group)) await $.state.set(VIEW, { ...view, folded: view.folded.filter(x => x !== group) })
   const now = await $.clock.now()
   focusTimer?.cancel()
   focusTimer = $.clock.after(FOCUS_MS, () => {
@@ -1629,19 +1685,22 @@ export const register: Register = on => {
 
     // One compact card per Jev call: the badge and its pick, what ran, and the judge's verdict.
     const jevCard = (c: JevCall) => {
-      const live = c.phase === 'asking' || c.phase === 'judging'
+      const stale = c.stale === true
+      const live = !stale && (c.phase === 'asking' || c.phase === 'judging')
       const jw = width - 4
       const pct = c.tier && c.probs ? ` ${Math.round((c.probs[c.tier] ?? 0) * 100)}%` : ''
       const head =
         c.phase === 'asking'
-          ? 'asking…'
+          ? stale
+            ? 'no answer (stale)'
+            : 'asking…'
           : c.phase === 'skipped'
             ? `skipped${c.skipReason ? ` (${c.skipReason})` : ''}`
             : c.tier
               ? `${c.tier}${pct}${c.effort ? ` · ${c.effort}` : ''}`
               : 'no pick'
       const ran = `${c.phase === 'asking' ? 'chose' : 'ran'} ${c.chosen}${c.chosenEffort ? ` · ${c.chosenEffort}` : ''}`
-      const verdict = c.phase === 'judging' ? 'judging…' : c.judge ? `judge (${c.judge.model}): ${c.judge.tier} · ${c.judge.effort} — ${c.judge.reason}` : ''
+      const verdict = c.phase === 'judging' ? (stale ? 'judge never answered (stale)' : 'judging…') : c.judge ? `judge (${c.judge.model}): ${c.judge.tier} · ${c.judge.effort} — ${c.judge.reason}` : ''
       const text = `${cut(c.description, Math.max(8, jw - 6 - head.length - 4))} → ${head}`
       return (
         <Box key={`jev-${c.id}`} flexDirection="column" width={width} borderStyle="round" borderColor="suggestion" borderDimColor={!live} paddingX={1} marginBottom={1}>
@@ -1711,7 +1770,7 @@ export const register: Register = on => {
     const { value: isHidden = false } = await $.state.get(HIDDEN)
     const { value: planned = null } = await $.state.get(PLAN)
     const { value: calls = [] } = await $.state.get(JEV)
-    const asking = calls.filter(c => c.phase === 'asking')
+    const asking = calls.filter(c => c.phase === 'asking' && !c.stale)
     const showPlan = !!planned && planned.shown && planned.steps.length > 0
     if (isOff || isHidden || hidden || (!showPlan && !asking.length)) return next(e)
     const p: BandPlan = showPlan ? planned : { title: '', steps: [], shown: false }

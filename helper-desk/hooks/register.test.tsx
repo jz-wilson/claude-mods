@@ -43,7 +43,7 @@ function rig(on: On, files: Record<string, string>, stored: Record<string, unkno
   const closed: string[] = []
   const ran: string[][] = []
   const toasts: string[] = []
-  const probes = { blits: 0, denyBlit: false, jevReads: 0 }
+  const probes = { blits: 0, denyBlit: false, jevReads: 0, onBlit: undefined as undefined | (() => Promise<unknown>) }
 
   on('session.start', async ($, e) => ({ cwd: e.cwd }) as never)
   on('session.id', async () => ({ value: 'sess1' }) as never)
@@ -57,6 +57,7 @@ function rig(on: On, files: Record<string, string>, stored: Record<string, unkno
   mock.store(on, stored)
   on('ui.blit', async () => {
     probes.blits += 1
+    await probes.onBlit?.()
     return { value: probes.denyBlit ? { deny: 'not mounted' } : {} } as never
   })
   on('session.send', async () => ({ isDelivered: true }) as never)
@@ -696,7 +697,7 @@ const JEV_FILE = '*/.claude/logs/jev-live/sess1.json'
 
 const jevCall = (id: string, phase: string, extra: Record<string, unknown> = {}) => ({
   id,
-  at: 1,
+  at: 1_000_000,
   description: 'Fluid pass: filetree',
   subagentType: 'general-purpose',
   chosen: 'sonnet',
@@ -982,4 +983,123 @@ test('motion off is kept across sessions: a stored off starts the pets still', {
   const d = await $.ui.mount({ plugin: 'helper-desk', surface: 'desktop', component: 'Pane', requestId: 'helpers', props: props(80) })
   const svg = String((await d.findAll({ type: 'Svg' })).find(p => String(p.props.alt).startsWith('Claude crab'))?.props.source)
   expect(svg.includes('@keyframes'), 'stored off: no keyframes on the desktop pet either').toBe(false)
+})
+
+// ---------- Fix round 1 ----------
+
+test('one unreadable Jev poll keeps the cards and the watch; a good one then shows the verdict', { timeoutMs: 30000 }, async ($, on) => {
+  const files: Record<string, string> = { [JEV_FILE]: jevFile([jevCall('j1', 'answered', { tier: 'sonnet', effort: 'high' })]) }
+  const { clock } = rig(on, files)
+  await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface: 'terminal', isInteractive: true } as never)
+  const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'Pane', requestId: 'helpers', props: props(80) })
+  expect(await v.find({ type: 'Text', text: /→ sonnet · high$/ }), 'open call drawn').toBeDefined()
+  // A torn write: the cards stay and the poller carries on.
+  files[JEV_FILE] = '{"calls":[{"id":'
+  await clock.advance(2_100)
+  expect(await v.find({ type: 'Text', text: /→ sonnet · high$/ }), 'torn read: cards kept').toBeDefined()
+  files[JEV_FILE] = jevFile([judgedCall])
+  await clock.advance(2_100)
+  expect(await v.find({ type: 'Text', text: /^judge \(haiku\)/ }), 'the next good read shows the verdict').toBeDefined()
+  // A file that is gone is no cards.
+  delete files[JEV_FILE]
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'a1', description: 'x', prompt: 'x', subagentType: 'general-purpose' } as never)
+  await clock.advance(2_100)
+  expect(await v.find({ text: /Jev/ }), 'missing file: no cards').toBeUndefined()
+})
+
+test('a malformed Jev row is dropped instead of crashing the pane', { timeoutMs: 30000 }, async ($, on) => {
+  const { description: _gone, ...noDescription } = jevCall('bad', 'asking')
+  const files: Record<string, string> = {
+    [JEV_FILE]: jevFile([noDescription, { ...jevCall('bad2', 'judged'), judge: 'nope', probs: 3 }, 7, null, jevCall('ok', 'asking')]),
+  }
+  rig(on, files)
+  await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface: 'terminal', isInteractive: true } as never)
+  const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'Pane', requestId: 'helpers', props: props(80) })
+  expect(await v.findAll({ type: 'Text', text: /^ Jev $/ }), 'the row without a description is dropped, the odd-typed one kept plain').toHaveLength(2)
+  expect(await v.find({ type: 'Text', text: /→ asking…$/ }), 'the good row draws').toBeDefined()
+})
+
+test('a Jev call stuck open turns stale and the poller stops', { timeoutMs: 30000 }, async ($, on) => {
+  const files: Record<string, string> = { [JEV_FILE]: jevFile([jevCall('j1', 'judging', { tier: 'sonnet', effort: 'high' }), jevCall('j2', 'asking', { at: 1_000_000 + 11 * 60_000 })]) }
+  const { clock, probes } = rig(on, files)
+  await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface: 'terminal', isInteractive: true } as never)
+  const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'Pane', requestId: 'helpers', props: props(80) })
+  expect(await v.find({ type: 'Text', text: /^judging…$/ }), 'live at first').toBeDefined()
+  await clock.advance(9 * 60_000)
+  expect(await v.find({ type: 'Text', text: /^judging…$/ }), 'still judging at 9 minutes').toBeDefined()
+  await clock.advance(2 * 60_000)
+  expect(await v.find({ type: 'Text', text: /^judging…$/ }), 'no live judging past the cap').toBeUndefined()
+  expect(await v.find({ type: 'Text', text: /^judge never answered \(stale\)$/ }), 'shown as stale').toBeDefined()
+  expect(await v.find({ type: 'Text', text: /→ asking…$/ }), 'the later call is still live').toBeDefined()
+  // Once that one is stale as well, polling stops.
+  await clock.advance(11 * 60_000)
+  const stopped = probes.jevReads
+  await clock.advance(60_000)
+  expect(probes.jevReads, 'no reads once every call is final or stale').toBe(stopped)
+  const band = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'AbovePrompt', props: bandProps(80) })
+  expect(await band.find({ text: /Jev/ }), 'a stale call is not asking in the band').toBeUndefined()
+})
+
+test('a send right after a spawn finds the helper; names prefer the working helper; unknown addresses are not the main chat', { timeoutMs: 30000 }, async ($, on) => {
+  const { clock } = rig(on, {})
+  await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface: 'terminal', isInteractive: true } as never)
+  const spawn = (name: string, n: number) =>
+    $.agent.spawn({ tool_use_id: `s${n}`, prompt: 'x', description: `Task ${n}`, subagentType: 'general-purpose', name } as never)
+  await spawn('alice', 1)
+  await spawn('bob', 2)
+  // No settle: the send runs as soon as the spawns return.
+  await $.session.send({ to: 'bob', text: 'hi', agentId: 'agent-a1' } as never)
+  await $.session.send({ to: '*', text: 'everyone', agentId: 'agent-a1' } as never)
+  await $.session.send({ to: 'nobody-here', text: 'hi' } as never)
+  await clock.settle()
+  const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'Pane', requestId: 'helpers', props: props(80) })
+  expect(await v.find({ key: 'goto|agent-a1|to|agent-a2' }), 'sent right after the spawn').toBeDefined()
+  expect(await v.find({ type: 'Text', text: /main chat/ }), 'an address nobody carries is not the main chat').toBeUndefined()
+
+  // Two helpers share a name: the working one gets the message.
+  await $.turn.complete({ answer: 'ok', agentId: 'agent-a2', reason: 'answer', durationMs: 1, isAborted: false, turnId: 't1' } as never)
+  await $.agent.spawn({ tool_use_id: 's3', prompt: 'x', description: 'Task 3', subagentType: 'general-purpose', name: 'bob' } as never)
+  await $.session.send({ to: 'bob', text: 'again', agentId: 'agent-a1' } as never)
+  await clock.settle()
+  expect(await v.find({ key: 'goto|agent-a1|to|agent-a3' }), 'the working bob is the receiver').toBeDefined()
+})
+
+test('motion off from inside a frame stops the blits at once', { timeoutMs: 30000 }, async ($, on) => {
+  const { clock, probes } = rig(on, {})
+  await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface: 'terminal', isInteractive: true } as never)
+  await $.agent.spawn({ tool_use_id: 's1', prompt: 'x', description: 'One', subagentType: 'general-purpose' } as never)
+  await $.agent.spawn({ tool_use_id: 's2', prompt: 'x', description: 'Two', subagentType: 'general-purpose' } as never)
+  await clock.settle()
+  const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'Pane', requestId: 'helpers', props: props(80) })
+  probes.onBlit = async () => {
+    probes.onBlit = undefined
+    await $.command.run({ command: 'helpers', args: 'motion off', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } } as never)
+  }
+  await clock.advance(1_000)
+  expect(probes.blits, 'the second pet of that frame and every later frame are not blitted').toBe(1)
+  void v
+})
+
+test('/helpers goto and a chip open a folded group first', { timeoutMs: 30000 }, async ($, on) => {
+  const { clock } = rig(on, {})
+  await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface: 'terminal', isInteractive: true } as never)
+  for (const [i, name] of ['alice', 'bob'].entries()) {
+    await $.agent.spawn({ tool_use_id: `s${i}`, prompt: 'x', description: `Task ${name}`, subagentType: 'general-purpose', name } as never)
+  }
+  await $.session.send({ to: 'bob', text: 'hi', agentId: 'agent-a1' } as never)
+  await clock.settle()
+  const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'Pane', requestId: 'helpers', props: props(80) })
+  const run = (args: string) => $.command.run({ command: 'helpers', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } } as never)
+  await run('fold running')
+  expect(await v.find({ key: 'card-agent-a2' }), 'folded: no card').toBeUndefined()
+  await run('goto bob')
+  expect(await v.find({ key: 'card-agent-a2' }), 'goto opened the group').toBeDefined()
+  expect((await v.find({ key: 'card-agent-a2' }))?.props.borderColor, 'and lit the card').toBe('claude')
+  // A chip on a running card points at a finished helper whose group is folded.
+  await $.turn.complete({ answer: 'ok', agentId: 'agent-a2', reason: 'answer', durationMs: 1, isAborted: false, turnId: 't1' } as never)
+  await run('fold finished')
+  await clock.settle()
+  expect(await v.find({ key: 'card-agent-a2' }), 'finished group folded').toBeUndefined()
+  await v.press({ key: 'goto|agent-a1|to|agent-a2' })
+  expect(await v.find({ key: 'card-agent-a2' }), 'the chip opened the finished group').toBeDefined()
 })
