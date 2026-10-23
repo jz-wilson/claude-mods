@@ -736,7 +736,8 @@ async function resolveHome($: EngineInterface) {
   const fromEnv = (await $.env.get('HOME').catch(() => undefined)) || (await $.env.get('USERPROFILE').catch(() => undefined))
   if (fromEnv) return fromEnv.replace(/\\/g, '/').replace(/\/$/, '')
   const guess = $.plugin.root.replace(/\\/g, '/').split('/.claude/')[0] ?? ''
-  console.debug(`helper-desk: no HOME or USERPROFILE, taking ${guess} from the plugin path`)
+  home = guess
+  await log($, `no HOME or USERPROFILE: taking ${guess} from the plugin path`)
   return guess
 }
 
