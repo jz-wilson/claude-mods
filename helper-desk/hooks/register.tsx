@@ -2046,16 +2046,17 @@ export const register: Register = on => {
       const art = jevCanvas(state)
       const svgBox = svgSize(e.props.bodyColumns, gw)
       let sprite = null
-      let spriteW = 0
+      // The sprite's own columns; beside the text it also takes a gutter, above the text it needs none.
+      const artW = Svg ? svgBox.columns : art.columns
+      const jevStacked = jw - (artW + 1) < MIN_TEXT
+      const spriteW = jevStacked ? artW : artW + 1
       if (Svg) {
-        spriteW = svgBox.columns + 1
         sprite = (
           <Box key={`jev-art-${c.id}`} width={spriteW} flexShrink={0}>
             <Svg source={jevSvg(state, c.tier, moving, phase, e.props.bodyColumns)} alt="Jev, the cube-bot" width={svgBox.width} height={svgBox.height} />
           </Box>
         )
       } else if (Raster) {
-        spriteW = art.columns + 1
         pets.set(`jev-${c.id}`, { kind: 'jev', requestId: e.requestId, id: c.id, columns: art.columns, rows: art.rows })
         sprite = (
           <Box key={`jev-art-${c.id}`} width={spriteW} flexShrink={0}>
@@ -2063,8 +2064,6 @@ export const register: Register = on => {
           </Box>
         )
       }
-      // Too little room beside the sprite: the line goes under it.
-      const jevStacked = jw - spriteW < MIN_TEXT
       return (
         <Box key={`jev-${c.id}`} flexDirection="column" width={width} borderStyle="round" borderColor="suggestion" borderDimColor={!live} paddingX={1} marginBottom={1}>
           <Box key={`jev-head-${c.id}`} flexDirection="row" gap={1} width={jw}>

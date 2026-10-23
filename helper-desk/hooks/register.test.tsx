@@ -1496,12 +1496,15 @@ test('a sprite that leaves under 16 text columns stands above the text; it is ne
   await $.agent.spawn({ tool_use_id: 's1', prompt: 'x', description: 'One', subagentType: 'general-purpose' } as never)
   await clock.settle()
   const sizes = new Set<string>()
-  for (const [width, stacked, jevStacked] of [[40, true, true], [80, false, false], [144, false, false]] as const) {
+  for (const [width, stacked, jevStacked] of [[32, true, true], [40, true, true], [80, false, false], [144, false, false]] as const) {
     const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'Pane', requestId: 'helpers', props: props(width) })
     expect((await v.find({ key: 'card-agent-a1' }))?.props.flexDirection, `${width}: crab card`).toBe(stacked ? 'column' : 'row')
     expect((await v.find({ key: 'jev-body-j1' }))?.props.flexDirection, `${width}: judging card, 28 columns of sprite`).toBe(jevStacked ? 'column' : 'row')
-    // The narrow judged one has room beside its 14 columns at 80 and up, and at 40 too.
-    expect((await v.find({ key: 'jev-body-j2' }))?.props.flexDirection, `${width}: judged card`).toBe('row')
+    // The judged one, 14 columns, has room beside it from 40 up and stacks at the 32 minimum.
+    expect((await v.find({ key: 'jev-body-j2' }))?.props.flexDirection, `${width}: judged card`).toBe(width === 32 ? 'column' : 'row')
+    for (const key of ['jev-art-j1', 'jev-art-j2', 'pet-agent-a1']) {
+      expect(Number((await v.find({ key }))?.props.width), `${width}: ${key} fits inside the card`).toBeLessThanOrEqual(Math.max(32, width) - 4)
+    }
     const crab = (await v.findAll({ type: 'Raster' })).pop()
     sizes.add(`${crab?.props.columns}x${crab?.props.rows}`)
     await v.unmount()
