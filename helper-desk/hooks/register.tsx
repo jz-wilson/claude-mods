@@ -119,7 +119,11 @@ export function tierOf(model: string): Tier {
   const m = /(opus|sonnet|haiku)/i.exec(model)
   return m ? (m[1]!.toLowerCase() as Tier) : 'sonnet'
 }
-const effortOf = (v: unknown): Effort => (EFFORTS.includes(v as Effort) ? (v as Effort) : 'medium')
+// An integer budget has no scale in the API's types, so it draws as medium, like an effort nobody named.
+const effortOf = (v: unknown): Effort => {
+  const name = typeof v === 'string' ? v.trim().toLowerCase() : ''
+  return EFFORTS.includes(name as Effort) ? (name as Effort) : 'medium'
+}
 const dotsOf = (e: Effort) => '●'.repeat(DOTS[e]) + '○'.repeat(5 - DOTS[e])
 
 function shade(hex: string, k: number) {
@@ -313,7 +317,7 @@ export function jevSprite(state: JevState, tier: Tier | undefined, t: number, o:
     }
   }
   const parts = jevParts(bars, dy, tilt, legLift)
-  const blink = !o.still && !o.noBlink && state !== 'judged' && wrap(u, BLINK_MS) < BLINK_HOLD_MS
+  const blink = !o.still && !o.noBlink && state !== 'judged' && state !== 'asking' && wrap(u, BLINK_MS) < BLINK_HOLD_MS
   const px: PxMap = new Map([...parts.top, ...parts.rest, ...parts.bars, ...parts.eyesLow, ...(blink ? [] : parts.eyesTop), ...parts.legs])
   return { px, colors: jevColors(rot), order: JEV_ORDER }
 }
@@ -592,8 +596,11 @@ let crabBusy = false
 let focusTimer: { cancel: () => void } | null = null
 // False while /helpers motion off holds the pets still; $.store keeps the choice.
 let motion = true
+// The main chat's model, from its own model requests: what a helper that inherits it draws as.
+let mainModel = ''
 // Each pet Raster the last draw mounted, by its key: what the frame timer blits.
-type PetEntry = { requestId: string; id: string; columns: number; rows: number } & ({ kind: 'crab'; hue: number } | { kind: 'jev' })
+// A Jev entry also keeps the grid width it was drawn for: a call that moves on to another state draws another canvas.
+type PetEntry = { requestId: string; id: string; columns: number; rows: number } & ({ kind: 'crab'; hue: number } | { kind: 'jev'; gridW: number })
 const pets = new Map<string, PetEntry>()
 // Effort asked for in an Agent call, by its tool_use_id, until the spawn picks it up.
 const dispatchEffort = new Map<string, Effort>()
@@ -879,23 +886,34 @@ async function poll($: EngineInterface) {
   else await readCost($)
 }
 
+/** A helper's model family: its own model, else the main chat's (a helper that inherits it), else sonnet. */
+const tierOfHelper = (hp: Helper) => tierOf(/(opus|sonnet|haiku)/i.test(hp.model) ? hp.model : mainModel)
+
 // Jev's art moves while a call is asked, answered or being judged, and not once it is stale.
 const jevMoving = (c: JevCall) => !c.stale && (c.phase === 'asking' || c.phase === 'answered' || c.phase === 'judging')
 const jevStateOf = (c: JevCall): JevState => (c.stale || c.phase === 'skipped' || c.phase === 'judged' ? 'judged' : c.phase)
 // Each call keeps its own place in the tumble, so two cards never move in step.
 const jevPhaseOf = (id: string) => [...id].reduce((n, ch) => (n * 31 + ch.charCodeAt(0)) % 1500, 7)
 
-/** The next frame of a registered pet, or null when it should stand still: its helper is not working, or its Jev call is over. */
-function petCells(pet: PetEntry, t: number): string | null {
-  if (pet.kind === 'crab') {
-    const hp = helpers.find(x => x.id === pet.id)
-    return hp?.phase === 'working' ? drawCrab(pet.columns, pet.rows, t, pet.hue, { tier: tierOf(hp.model), effort: effortOf(hp.level) }) : null
-  }
+/** Whether a registered pet moves now: its helper works, or its Jev call is open and still drawn on the canvas it was mounted with. */
+function petMoving(pet: PetEntry): boolean {
+  if (pet.kind === 'crab') return helpers.find(x => x.id === pet.id)?.phase === 'working'
   const c = jev.find(x => x.id === pet.id)
-  return c && jevMoving(c) ? drawJev(pet.columns, pet.rows, jevStateOf(c), c.tier, t, jevPhaseOf(c.id)) : null
+  return !!c && jevMoving(c) && jevGridW(jevStateOf(c)) === pet.gridW
 }
 
-const movingPets = () => [...pets.values()].some(p => petCells(p, 0) !== null)
+/** The next frame of a moving pet, or null: a pet that stands still, or whose canvas is out of date until the next draw. */
+function petCells(pet: PetEntry, t: number): string | null {
+  if (!petMoving(pet)) return null
+  if (pet.kind === 'crab') {
+    const hp = helpers.find(x => x.id === pet.id)!
+    return drawCrab(pet.columns, pet.rows, t, pet.hue, { tier: tierOfHelper(hp), effort: effortOf(hp.level) })
+  }
+  const c = jev.find(x => x.id === pet.id)!
+  return drawJev(pet.columns, pet.rows, jevStateOf(c), c.tier, t, jevPhaseOf(c.id))
+}
+
+const movingPets = () => [...pets.values()].some(petMoving)
 
 /** One 40 ms frame for every moving pet, crabs and Jev alike; a denied blit means that canvas is gone, so it is not painted again until the next draw. */
 async function crabFrame($: EngineInterface) {
@@ -955,7 +973,7 @@ async function publish($: EngineInterface) {
   syncTimers($)
 }
 
-async function addHelper($: EngineInterface, id: string, description: string, type: string, model: string, name = '', level: Effort = 'medium') {
+async function addHelper($: EngineInterface, id: string, description: string, type: string, model: string, name = '', level?: Effort) {
   const known = helpers.find(hp => hp.id === id)
   if (known) {
     // Found first through its own tool calls: fill in what the spawn knows.
@@ -963,6 +981,8 @@ async function addHelper($: EngineInterface, id: string, description: string, ty
     if (type) known.type = type
     if (model && !known.model) known.model = model
     if (name && !known.name) known.name = name
+    // A card found first through its own tool calls has no dispatch yet: the spawn tells its effort.
+    if (level) known.level = level
     await publish($)
     return
   }
@@ -977,7 +997,7 @@ async function addHelper($: EngineInterface, id: string, description: string, ty
     heardFrom: [],
     model,
     effort: '',
-    level,
+    level: level ?? 'medium',
     phase: 'working',
     startedAt: 0,
     endedAt: 0,
@@ -1659,10 +1679,10 @@ export const register: Register = on => {
     if (off) return r
     void watchJev($).catch(err => log($, `jev: ${String(err)}`))
     const id = (r as { agentId?: string }).agentId
-    const level = dispatchEffort.get(e.tool_use_id) ?? 'medium'
+    const level = dispatchEffort.get(e.tool_use_id)
     dispatchEffort.delete(e.tool_use_id)
     if (id) {
-      void addHelper($, id, e.description || 'Subagent', e.subagentType || 'subagent', shortModel(e.model ?? r.model ?? ''), e.name ?? '', level).catch(err =>
+      void addHelper($, id, e.description || 'Subagent', e.subagentType || 'subagent', shortModel(e.model && e.model !== 'inherit' ? e.model : (r.model ?? '')), e.name ?? '', level).catch(err =>
         log($, `spawn: ${String(err)}`),
       )
     }
@@ -1696,13 +1716,16 @@ export const register: Register = on => {
       return { result: said } as never
     }
     if (off) return next(e)
-    if (tool === 'Agent' || tool === 'Task') dispatchEffort.set(String(args.tool_use_id ?? ''), effortOf(args.effort))
-    // Jev rates an Agent dispatch before it runs: watch its file again.
-    if (!id && (tool === 'Agent' || tool === 'Task')) void watchJev($).catch(err => log($, `jev: ${String(err)}`))
-    if (id) {
-      void noteTool($, id, describe(tool, args)).catch(err => log($, `tool: ${String(err)}`))
-      return next(e)
+    // Bookkeeping only: whatever it does, the call goes on.
+    try {
+      if (tool === 'Agent' || tool === 'Task') dispatchEffort.set(String(args.tool_use_id ?? ''), effortOf(args.effort))
+      // Jev rates an Agent dispatch before it runs: watch its file again.
+      if (!id && (tool === 'Agent' || tool === 'Task')) void watchJev($).catch(err => log($, `jev: ${String(err)}`))
+      if (id) void noteTool($, id, describe(tool, args)).catch(err => log($, `tool: ${String(err)}`))
+    } catch (err) {
+      void log($, `tool bookkeeping: ${String(err)}`)
     }
+    if (id) return next(e)
     if (MIRRORED.has(tool)) {
       const r = await next(e)
       turnPlanned = true
@@ -1735,6 +1758,7 @@ export const register: Register = on => {
   on('turn.step', async function* ($, e, next) {
     const r = yield* next(e)
     const id = e.agentId
+    if (!id && e.model) mainModel = shortModel(e.model)
     if (id && !off) {
       const effort = e.effort === undefined ? '' : String(e.effort)
       void noteStep($, id, e.model, effort, r.usage ?? null).catch(err => log($, `step: ${String(err)}`))
@@ -1812,7 +1836,7 @@ export const register: Register = on => {
     const pet = (hp: Helper) => {
       const hue = hueOf(hp.hue)
       const moving = moves && hp.phase === 'working'
-      const tier = tierOf(hp.model)
+      const tier = tierOfHelper(hp)
       const effort = effortOf(hp.level)
       if (Svg) {
         return (
@@ -1872,7 +1896,7 @@ export const register: Register = on => {
       const time = clockTime((live ? Math.max(clk.now, hp.startedAt) : hp.endedAt) - hp.startedAt)
       const meta = [hp.hasUsage ? `${tokenText(hp.tokens + hp.turnTokens)} tokens` : '', time].filter(Boolean).join(' · ')
       const who = [hp.type, hp.model, hp.effort].filter(Boolean).join(' · ')
-      const tier = tierOf(hp.model)
+      const tier = tierOfHelper(hp)
       const current = hp.steps[hp.steps.length - 1]
       const spin = SPIN[clk.tick % SPIN.length]!
       const pulse = PULSE[clk.tick % PULSE.length]!
@@ -2051,7 +2075,7 @@ export const register: Register = on => {
         )
       } else if (Raster) {
         spriteW = art.columns + 1
-        pets.set(`jev-${c.id}`, { kind: 'jev', requestId: e.requestId, id: c.id, columns: art.columns, rows: art.rows })
+        pets.set(`jev-${c.id}`, { kind: 'jev', gridW: gw, requestId: e.requestId, id: c.id, columns: art.columns, rows: art.rows })
         sprite = (
           <Box key={`jev-art-${c.id}`} width={spriteW} flexShrink={0}>
             <Raster key={`jev-${c.id}`} columns={art.columns} rows={art.rows} cells={drawJev(art.columns, art.rows, state, c.tier, now, phase, !moving)} />

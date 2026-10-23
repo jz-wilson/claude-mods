@@ -43,7 +43,7 @@ function rig(on: On, files: Record<string, string>, stored: Record<string, unkno
   const closed: string[] = []
   const ran: string[][] = []
   const toasts: string[] = []
-  const probes = { blits: 0, denyBlit: false, jevReads: 0, onBlit: undefined as undefined | (() => Promise<unknown>) }
+  const probes = { blits: 0, badBlits: 0, denyBlit: false, jevReads: 0, onBlit: undefined as undefined | (() => Promise<unknown>) }
 
   on('session.start', async ($, e) => ({ cwd: e.cwd }) as never)
   on('session.id', async () => ({ value: 'sess1' }) as never)
@@ -55,12 +55,19 @@ function rig(on: On, files: Record<string, string>, stored: Record<string, unkno
   })
   const clock = mock.clock(on, { now: 1_000_000 })
   mock.store(on, stored)
-  on('ui.blit', async () => {
+  on('ui.blit', async ($, e) => {
     probes.blits += 1
+    const b = e as { cells: string; columns?: number; rows?: number }
+    // A frame drawn for another canvas than the mounted one would be refused by the engine.
+    if (b.columns && b.rows && b.cells.length !== b.columns * b.rows * 16) probes.badBlits += 1
     await probes.onBlit?.()
     return { value: probes.denyBlit ? { deny: 'not mounted' } : {} } as never
   })
   on('session.send', async () => ({ isDelivered: true }) as never)
+  on('turn.step', async function* ($, e) {
+    const step = e as { turnId: string; index: number }
+    return { turnId: step.turnId, index: step.index, answer: '', toolUses: [] } as never
+  })
   on('agent.spawn', async ($, e) => {
     const { description, subagentType } = e as { description: string; subagentType: string }
     const id = ids[agents.length]!
@@ -922,8 +929,8 @@ test('the pet timer runs only while a helper works, once, and stops on a denied 
   const t1 = probes.blits
   await clock.advance(400)
   const two = probes.blits - t1
-  expect(two, 'two pets, one timer: at most 2 blits a frame').toBeLessThanOrEqual(2 * 10)
-  expect(two, 'both pets are painted').toBeGreaterThan(10)
+  // The clock mock cannot count timers, so count what a second timer would double: ten 40 ms frames, two pets.
+  expect(two, 'two pets, one timer: exactly one blit a pet a 40 ms frame').toBe(2 * 10)
 
   // A finished pet is not repainted; the other keeps going.
   await done('agent-a1', 1)
@@ -1276,4 +1283,99 @@ test('one timer paints crabs and Jev: nothing moving is no blits, an open Jev ca
   await clock.advance(1_000)
   expect(probes.blits, 'motion off: no blits').toBe(off)
   void v
+})
+
+// ---------- Sprite fix round 1 ----------
+
+test('a card adopted from its own tool calls takes its effort from the spawn, and effort names are case-blind', { timeoutMs: 30000 }, async ($, on) => {
+  const { clock, agents } = rig(on, {})
+  await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface: 'terminal', isInteractive: true } as never)
+  // The helper's tool call arrives before its spawn: the card is adopted at medium.
+  agents.push({ id: 'agent-a1', description: 'Early bird', type: 'general-purpose', status: 'running' })
+  await $.tool.call({ tool: 'Read', tool_use_id: 'c1', file_path: '/a.md', agentId: 'agent-a1' } as never)
+  await clock.settle()
+  const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'Pane', requestId: 'helpers', props: props(80) })
+  expect(await v.find({ type: 'Text', text: /^●●○○○$/ }), 'adopted at medium').toBeDefined()
+  // Then its spawn names the effort, in any case.
+  agents.length = 0
+  await $.tool.call({ tool: 'Agent', tool_use_id: 's1', description: 'Early bird', prompt: 'x', subagentType: 'general-purpose', effort: 'HIGH' } as never)
+  await $.agent.spawn({ tool_use_id: 's1', prompt: 'x', description: 'Early bird', subagentType: 'general-purpose' } as never)
+  await clock.settle()
+  expect(await v.find({ type: 'Text', text: /^●●●○○$/ }), 'three dots once the spawn is known').toBeDefined()
+  expect(await v.find({ type: 'Text', text: /^●●○○○$/ }), 'no medium dots left').toBeUndefined()
+})
+
+test('a helper that inherits draws as the main chat model until its own requests name one', { timeoutMs: 30000 }, async ($, on) => {
+  const { clock, agents } = rig(on, {})
+  await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface: 'terminal', isInteractive: true } as never)
+  agents.push({ id: 'agent-a1', description: 'Adopted', type: 'general-purpose', status: 'running' })
+  await $.tool.call({ tool: 'Read', tool_use_id: 'c1', file_path: '/a.md', agentId: 'agent-a1' } as never)
+  await clock.settle()
+  const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'Pane', requestId: 'helpers', props: props(80) })
+  expect(await v.find({ type: 'Text', text: /^S$/ }), 'no model known anywhere: sonnet art').toBeDefined()
+  const step = async (model: string, agentId?: string) => {
+    for await (const chunk of $.turn.step({ turnId: 't1', index: 0, model, ...(agentId ? { agentId } : {}) } as never)) void chunk
+  }
+  await step('claude-haiku-5-5')
+  await $.tool.call({ tool: 'Read', tool_use_id: 'c2', file_path: '/b.md', agentId: 'agent-a1' } as never)
+  await clock.settle()
+  expect(await v.find({ type: 'Text', text: /^H$/ }), 'the main chat model stands in').toBeDefined()
+  await step('claude-opus-5-5', 'agent-a1')
+  await clock.settle()
+  expect(await v.find({ type: 'Text', text: /^O$/ }), 'its own model replaces it').toBeDefined()
+  // A spawn that says inherit shows the model the engine resolved, not the word.
+  agents.length = 0
+  await $.agent.spawn({ tool_use_id: 's9', prompt: 'x', description: 'Borrower', subagentType: 'general-purpose', model: 'inherit' } as never)
+  await clock.settle()
+  expect(await v.find({ type: 'Text', text: /inherit/i }), 'never the word inherit').toBeUndefined()
+})
+
+test('bookkeeping that throws never blocks the helper tool call', { timeoutMs: 30000 }, async ($, on) => {
+  const { clock } = rig(on, {})
+  await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface: 'terminal', isInteractive: true } as never)
+  await $.agent.spawn({ tool_use_id: 's1', prompt: 'x', description: 'One', subagentType: 'general-purpose' } as never)
+  await clock.settle()
+  // A tool name that is not text makes the step description throw.
+  const r = (await $.tool.call({ tool: 7, tool_use_id: 'c1', agentId: 'agent-a1' } as never)) as { result?: unknown }
+  expect(r.result, 'the call still reached the tool').toBe('ok')
+})
+
+test('terminal Jev does not blink while asking, as the Svg does not', () => {
+  const eyesAtTop = (state: 'asking' | 'answered') => [...jevSprite(state, 'sonnet', 0).px].filter(([k, c]) => c === 'e' && cellOf(k)[1] === 8).length
+  expect(eyesAtTop('asking'), 'asking at a blink time: both eyes open').toBe(2)
+  expect(eyesAtTop('answered'), 'answered blinks at the same time').toBe(0)
+})
+
+test('a frame never uses a canvas other than the one mounted: answered to judging between a draw and a frame', { timeoutMs: 30000 }, async ($, on) => {
+  const files: Record<string, string> = { [JEV_FILE]: jevFile([jevCall('j1', 'answered', { tier: 'sonnet', effort: 'high' })]) }
+  const { clock, probes } = rig(on, files)
+  await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface: 'terminal', isInteractive: true } as never)
+  const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'Pane', requestId: 'helpers', props: props(80) })
+  await clock.advance(400)
+  expect(probes.blits, 'answered paints').toBeGreaterThan(0)
+  // The pane is gone (no redraw follows), the call moves to judging: the 32-wide canvas is not the mounted 20-wide one.
+  await v.unmount()
+  files[JEV_FILE] = jevFile([jevCall('j1', 'judging', { tier: 'sonnet', effort: 'high' })])
+  await clock.advance(2_100)
+  const after = probes.blits
+  await clock.advance(1_000)
+  expect(probes.blits, 'no frames for the old canvas').toBe(after)
+  expect(probes.badBlits, 'and none was ever the wrong size').toBe(0)
+})
+
+test('a Jev call left answered until it goes stale stops painting', { timeoutMs: 120000 }, async ($, on) => {
+  const files: Record<string, string> = { [JEV_FILE]: jevFile([jevCall('j1', 'answered', { tier: 'sonnet', effort: 'high' })]) }
+  const { clock, probes } = rig(on, files)
+  await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface: 'terminal', isInteractive: true } as never)
+  const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'Pane', requestId: 'helpers', props: props(80) })
+  await clock.advance(1_000)
+  expect(probes.blits, 'answered moves').toBeGreaterThan(0)
+  // The clock allows 10,000 waits an advance: 40 ms frames cross ten minutes in two steps.
+  await clock.advance(301_000)
+  await clock.advance(301_000)
+  await clock.advance(2_100)
+  expect(await v.find({ type: 'Text', text: /^ran sonnet · medium$/ }), 'still on the desk').toBeDefined()
+  const stale = probes.blits
+  await clock.advance(2_000)
+  expect(probes.blits, 'stale: no more frames').toBe(stale)
 })
