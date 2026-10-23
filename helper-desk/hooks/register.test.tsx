@@ -221,7 +221,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(a.includes('#2b1d16') && b.includes('#2b1d16'), 'same eyes and outline').toBe(true)
     expect(a.length < 131072, 'under the Svg limit').toBe(true)
     expect(String(pets[0]!.props.alt), 'alt names the colour').toBe('Claude crab, red')
-    expect(Number(pets[0]!.props.width) >= 48, 'a bigger pet').toBe(true)
+    expect(Number(pets[0]!.props.width) <= 32, 'a small pet beside the text').toBe(true)
 
     // Running pets carry their motion as CSS keyframes; no redraw is needed.
     expect(a.includes('@keyframes'), 'a running pet animates in CSS').toBe(true)
@@ -723,7 +723,7 @@ const judgedCall = jevCall('j1', 'judged', {
   judge: { tier: 'sonnet', effort: 'medium', model: 'haiku', reason: 'Scoped edit across a few files.' },
 })
 
-test('Jev calls draw as cards at 40, 80 and 144 columns on both surfaces, with theme colours only', { timeoutMs: 30000 }, async ($, on) => {
+test('Jev calls draw as one card at 40, 80 and 144 columns on both surfaces, with theme colours only', { timeoutMs: 30000 }, async ($, on) => {
   const files: Record<string, string> = {
     [JEV_FILE]: jevFile([
       judgedCall,
@@ -732,20 +732,30 @@ test('Jev calls draw as cards at 40, 80 and 144 columns on both surfaces, with t
       jevCall('j4', 'skipped', { skipReason: 'timeout' }),
     ]),
   }
-  rig(on, files)
+  const { clock } = rig(on, files)
   await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface: 'terminal', isInteractive: true } as never)
   for (const surface of ['terminal', 'desktop'] as const) {
     for (const width of WIDTHS) {
       const v = await $.ui.mount({ plugin: 'helper-desk', surface, component: 'Pane', requestId: 'helpers', props: props(width) })
       const where = `${surface} ${width}`
-      expect(await v.findAll({ type: 'Text', text: /^ Jev $/ }), `${where}: one Jev badge per call`).toHaveLength(4)
+      expect(await v.findAll({ type: 'Text', text: /^ Jev $/ }), `${where}: one Jev badge for all calls`).toHaveLength(1)
+      expect(await v.find({ type: 'Text', text: /^skipped/ }), `${where}: the latest call's status, labeled`).toBeDefined()
+      expect(await v.find({ type: 'Text', text: /^Status$/ }), `${where}: labels`).toBeDefined()
+      expect(await v.find({ type: 'Text', text: /^▸ 3 earlier decisions$/ }), `${where}: earlier ones folded`).toBeDefined()
+      expect(await v.find({ type: 'Text', text: /→ asking…$/ }), `${where}: folded rows not drawn`).toBeUndefined()
+      await v.press({ key: 'jev-history' })
+      await clock.settle()
+      expect(await v.find({ type: 'Text', text: /^▾ 3 earlier decisions$/ }), `${where}: unfolded`).toBeDefined()
       expect(await v.find({ type: 'Text', text: /→ sonnet 74% · high$/ }), `${where}: the pick`).toBeDefined()
-      expect(await v.findAll({ type: 'Text', text: /^ran sonnet · medium$/ }), `${where}: what ran`).toHaveLength(3)
-      expect(await v.find({ type: 'Text', text: /^judge \(haiku\): sonnet · medium/ }), `${where}: the verdict`).toBeDefined()
+      expect(await v.find({ type: 'Text', text: /^· model router · 4 decisions · working$/ }), `${where}: the count`).toBeDefined()
+      expect(await v.findAll({ type: 'Text', text: /^ {2}ran sonnet · medium/ }), `${where}: what ran`).toHaveLength(2)
+      if (width >= 80) expect(await v.find({ type: 'Text', text: /·  judge sonnet · medium ✓$/ }), `${where}: the verdict`).toBeDefined()
+
       expect(await v.find({ type: 'Text', text: /→ asking…$/ }), `${where}: asking`).toBeDefined()
-      expect(await v.find({ type: 'Text', text: /^chose sonnet · medium$/ }), `${where}: asking has chosen, not ran`).toBeDefined()
-      expect(await v.find({ type: 'Text', text: /^judging…$/ }), `${where}: judging`).toBeDefined()
-      expect(await v.find({ type: 'Text', text: /→ skipped \(timeout\)$/ }), `${where}: skipped`).toBeDefined()
+      expect(await v.find({ type: 'Text', text: /^ {2}chose sonnet · medium/ }), `${where}: asking has chosen, not ran`).toBeDefined()
+      if (width >= 80) expect(await v.find({ type: 'Text', text: /·  judging…$/ }), `${where}: judging`).toBeDefined()
+      await v.press({ key: 'jev-history' })
+      await clock.settle()
       expect(await v.find({ text: /Claude crab/ }), `${where}: no pet on a Jev card`).toBeUndefined()
       const badge = await v.find({ type: 'Text', text: /^ Jev $/ })
       expect(badge?.props.backgroundColor, `${where}: badge is suggestion`).toBe('suggestion')
@@ -789,7 +799,7 @@ test('the Jev poller runs while a call is open, stops once all are final, and re
   const callTool = $.tool.call as unknown as (input: unknown) => Promise<unknown>
   await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface: 'terminal', isInteractive: true } as never)
   const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'Pane', requestId: 'helpers', props: props(80) })
-  expect(await v.find({ type: 'Text', text: /→ asking…$/ }), 'asking from the first read').toBeDefined()
+  expect(await v.find({ type: 'Text', text: /^asking Jev which model fits…$/ }), 'asking from the first read').toBeDefined()
 
   const before = probes.jevReads
   await clock.advance(6_100)
@@ -797,7 +807,7 @@ test('the Jev poller runs while a call is open, stops once all are final, and re
 
   files[JEV_FILE] = jevFile([judgedCall])
   await clock.advance(2_100)
-  expect(await v.find({ type: 'Text', text: /^judge \(haiku\)/ }), 'the verdict arrives').toBeDefined()
+  expect(await v.find({ type: 'Text', text: /^sonnet · medium effort ✓ agrees \(by haiku\)$/ }), 'the verdict arrives').toBeDefined()
   const stopped = probes.jevReads
   await clock.advance(20_000)
   expect(probes.jevReads, 'no reads once every call is final').toBe(stopped)
@@ -806,7 +816,7 @@ test('the Jev poller runs while a call is open, stops once all are final, and re
   files[JEV_FILE] = jevFile([judgedCall, jevCall('j2', 'asking', { description: 'Second pass' })])
   await callTool({ tool: 'Agent', tool_use_id: 'a1', description: 'Second pass', prompt: 'x', subagentType: 'general-purpose' })
   await clock.settle()
-  expect(await v.find({ type: 'Text', text: /Second pass → asking…$/ }), 'new call drawn at once').toBeDefined()
+  expect(await v.find({ type: 'Text', text: /^Second pass$/ }), 'new call drawn at once').toBeDefined()
   files[JEV_FILE] = jevFile([
     judgedCall,
     jevCall('j2', 'judged', { description: 'Second pass', tier: 'haiku', effort: 'low', judge: { tier: 'haiku', effort: 'low', model: 'haiku', reason: 'ok' } }),
@@ -1005,14 +1015,14 @@ test('one unreadable Jev poll keeps the cards and the watch; a good one then sho
   const { clock } = rig(on, files)
   await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface: 'terminal', isInteractive: true } as never)
   const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'Pane', requestId: 'helpers', props: props(80) })
-  expect(await v.find({ type: 'Text', text: /→ sonnet · high$/ }), 'open call drawn').toBeDefined()
+  expect(await v.find({ type: 'Text', text: /^sonnet · high effort$/ }), 'open call drawn').toBeDefined()
   // A torn write: the cards stay and the poller carries on.
   files[JEV_FILE] = '{"calls":[{"id":'
   await clock.advance(2_100)
-  expect(await v.find({ type: 'Text', text: /→ sonnet · high$/ }), 'torn read: cards kept').toBeDefined()
+  expect(await v.find({ type: 'Text', text: /^sonnet · high effort$/ }), 'torn read: cards kept').toBeDefined()
   files[JEV_FILE] = jevFile([judgedCall])
   await clock.advance(2_100)
-  expect(await v.find({ type: 'Text', text: /^judge \(haiku\)/ }), 'the next good read shows the verdict').toBeDefined()
+  expect(await v.find({ type: 'Text', text: /✓ agrees/ }), 'the next good read shows the verdict').toBeDefined()
   // A file that is gone is no cards.
   delete files[JEV_FILE]
   await $.tool.call({ tool: 'Agent', tool_use_id: 'a1', description: 'x', prompt: 'x', subagentType: 'general-purpose' } as never)
@@ -1028,8 +1038,9 @@ test('a malformed Jev row is dropped instead of crashing the pane', { timeoutMs:
   rig(on, files)
   await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface: 'terminal', isInteractive: true } as never)
   const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'Pane', requestId: 'helpers', props: props(80) })
-  expect(await v.findAll({ type: 'Text', text: /^ Jev $/ }), 'the row without a description is dropped, the odd-typed one kept plain').toHaveLength(2)
-  expect(await v.find({ type: 'Text', text: /→ asking…$/ }), 'the good row draws').toBeDefined()
+  expect(await v.findAll({ type: 'Text', text: /^ Jev $/ }), 'one card either way').toHaveLength(1)
+  expect(await v.find({ type: 'Text', text: /^· model router · 2 decisions/ }), 'the row without a description is dropped, the odd-typed one kept plain').toBeDefined()
+  expect(await v.find({ type: 'Text', text: /^asking Jev which model fits…$/ }), 'the good row draws').toBeDefined()
 })
 
 test('a Jev call stuck open turns stale and the poller stops', { timeoutMs: 30000 }, async ($, on) => {
@@ -1039,13 +1050,15 @@ test('a Jev call stuck open turns stale and the poller stops', { timeoutMs: 3000
   // Motion off, so no 40 ms sprite timer runs through the twenty minutes this test lets pass.
   await $.command.run({ command: 'helpers', args: 'motion off', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } } as never)
   const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'Pane', requestId: 'helpers', props: props(80) })
-  expect(await v.find({ type: 'Text', text: /^judging…$/ }), 'live at first').toBeDefined()
+  await v.press({ key: 'jev-history' })
+  await clock.settle()
+  expect(await v.find({ type: 'Text', text: /·  judging…$/ }), 'live at first').toBeDefined()
   await clock.advance(9 * 60_000)
-  expect(await v.find({ type: 'Text', text: /^judging…$/ }), 'still judging at 9 minutes').toBeDefined()
+  expect(await v.find({ type: 'Text', text: /·  judging…$/ }), 'still judging at 9 minutes').toBeDefined()
   await clock.advance(2 * 60_000)
-  expect(await v.find({ type: 'Text', text: /^judging…$/ }), 'no live judging past the cap').toBeUndefined()
-  expect(await v.find({ type: 'Text', text: /^judge never answered \(stale\)$/ }), 'shown as stale').toBeDefined()
-  expect(await v.find({ type: 'Text', text: /→ asking…$/ }), 'the later call is still live').toBeDefined()
+  expect(await v.find({ type: 'Text', text: /·  judging…$/ }), 'no live judging past the cap').toBeUndefined()
+  expect(await v.find({ type: 'Text', text: /·  judge never answered \(stale\)$/ }), 'shown as stale').toBeDefined()
+  expect(await v.find({ type: 'Text', text: /^asking Jev which model fits…$/ }), 'the later call is still live').toBeDefined()
   // Once that one is stale as well, polling stops.
   await clock.advance(11 * 60_000)
   const stopped = probes.jevReads
@@ -1233,18 +1246,27 @@ test('Jev draws as an Svg with keyframes only while its call is open', { timeout
       jevCall('j4', 'judged', { tier: 'haiku', effort: 'low' }),
     ]),
   }
-  rig(on, files)
+  const { clock } = rig(on, files)
   await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface: 'desktop', isInteractive: true } as never)
+  const calls = JSON.parse(files[JEV_FILE]!).calls as unknown[]
   for (const width of WIDTHS) {
-    const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'desktop', component: 'Pane', requestId: 'helpers', props: props(width) })
-    const art = (await v.findAll({ type: 'Svg' })).filter(p => p.props.alt === 'Jev, the cube-bot').map(p => String(p.props.source))
-    expect(art, `${width}: one drawing a call`).toHaveLength(4)
+    // One card draws one Jev, so each state is drawn from a file holding only that call.
+    const art: string[] = []
+    for (const call of calls) {
+      files[JEV_FILE] = jevFile([call])
+      await $.tool.call({ tool: 'Agent', tool_use_id: `w${width}-${art.length}`, description: 'x', prompt: 'x', subagentType: 'general-purpose' } as never)
+      await clock.settle()
+      const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'desktop', component: 'Pane', requestId: 'helpers', props: props(width) })
+      const drawn = (await v.findAll({ type: 'Svg' })).filter(p => p.props.alt === 'Jev, the cube-bot').map(p => String(p.props.source))
+      expect(drawn, `${width}: one drawing for the card`).toHaveLength(1)
+      art.push(drawn[0]!)
+      await v.unmount()
+    }
     expect(art[0]!.includes('@keyframes fb'), `${width}: asking tumbles`).toBe(true)
     expect(art[1]!.includes('@keyframes jbob') && art[1]!.includes('@keyframes jey'), `${width}: answered bobs and blinks`).toBe(true)
     expect(art[2]!.includes('@keyframes jtl') && art[2]!.includes('@keyframes cbob'), `${width}: judging tilts, beside its judge crab`).toBe(true)
     expect(art[3]!.includes('@keyframes'), `${width}: judged stands still`).toBe(false)
     expect(art.every(x => x.length < 131072), `${width}: under the Svg limit`).toBe(true)
-    await v.unmount()
   }
 })
 
@@ -1380,7 +1402,7 @@ test('a Jev call left answered until it goes stale stops painting', { timeoutMs:
   await clock.advance(301_000)
   await clock.advance(301_000)
   await clock.advance(2_100)
-  expect(await v.find({ type: 'Text', text: /^ran sonnet · medium$/ }), 'still on the desk').toBeDefined()
+  expect(await v.find({ type: 'Text', text: /^sonnet · medium effort$/ }), 'still on the desk').toBeDefined()
   const stale = probes.blits
   await clock.advance(2_000)
   expect(probes.blits, 'stale: no more frames').toBe(stale)
@@ -1473,7 +1495,6 @@ test('the Raster is the 1 to 1 grid at 40, 80 and 144 columns: no downsampling',
   await $.command.run({ command: 'helpers', args: 'motion off', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } } as never)
   const hues = ['#dc2626', '#ea580c', '#eab308']
   const crabs = (['haiku', 'sonnet', 'opus'] as const).map((tier, i) => expectedCells([{ sprite: crabSprite(tier, 0, { still: true, body: hues[i]! }), ox: 0 }], CRAB_BOX))
-  const judged = expectedCells([{ sprite: jevSprite('judged', 'opus', 0, { still: true }), ox: 3 }], JEV_BOX)
   const judging = expectedCells(
     [{ sprite: jevSprite('judging', 'sonnet', 0, { still: true }), ox: 1 }, { sprite: crabSprite('haiku', 0, { effort: 'high', phase: 300, still: true, body: '#ea580c' }), ox: 9 }],
     JEV_JUDGE_BOX,
@@ -1481,12 +1502,11 @@ test('the Raster is the 1 to 1 grid at 40, 80 and 144 columns: no downsampling',
   for (const width of WIDTHS) {
     const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'Pane', requestId: 'helpers', props: props(width) })
     const rasters = await v.findAll({ type: 'Raster' })
-    expect(rasters, `${width}: three crabs and two Jev cards`).toHaveLength(5)
+    expect(rasters, `${width}: three crabs and one Jev card`).toHaveLength(4)
     const cells = rasters.map(r => decodeCells(String(r.props.cells)))
-    // The Jev cards come first in the pane, then the crabs.
-    expect(cells[0], `${width}: Jev judged`).toEqual(judged)
-    expect(cells[1], `${width}: Jev judging with its judge crab`).toEqual(judging)
-    cells.slice(2).forEach((got, i) => expect(got, `${width}: crab ${i} is the 1 to 1 grid`).toEqual(crabs[i]))
+    // The Jev card comes first in the pane, drawing the open call, then the crabs.
+    expect(cells[0], `${width}: Jev judging with its judge crab`).toEqual(judging)
+    cells.slice(1).forEach((got, i) => expect(got, `${width}: crab ${i} is the 1 to 1 grid`).toEqual(crabs[i]))
     for (const r of rasters) expect(Number(r.props.columns) + 1, `${width}: the sprite fits inside the card`).toBeLessThanOrEqual(width - 4)
     await v.unmount()
   }
@@ -1502,10 +1522,9 @@ test('a sprite that leaves under 16 text columns stands above the text; it is ne
   for (const [width, stacked, jevStacked] of [[32, true, true], [40, true, true], [80, false, false], [144, false, false]] as const) {
     const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'Pane', requestId: 'helpers', props: props(width) })
     expect((await v.find({ key: 'card-agent-a1' }))?.props.flexDirection, `${width}: crab card`).toBe(stacked ? 'column' : 'row')
-    expect((await v.find({ key: 'jev-body-j1' }))?.props.flexDirection, `${width}: judging card, 28 columns of sprite`).toBe(jevStacked ? 'column' : 'row')
-    // The judged one, 14 columns, has room beside it from 40 up and stacks at the 32 minimum.
-    expect((await v.find({ key: 'jev-body-j2' }))?.props.flexDirection, `${width}: judged card`).toBe(width === 32 ? 'column' : 'row')
-    for (const key of ['jev-art-j1', 'jev-art-j2', 'pet-agent-a1']) {
+    // The card draws the open judging call: 28 columns of sprite.
+    expect((await v.find({ key: 'jev-body' }))?.props.flexDirection, `${width}: judging card, 28 columns of sprite`).toBe(jevStacked ? 'column' : 'row')
+    for (const key of ['jev-art', 'pet-agent-a1']) {
       expect(Number((await v.find({ key }))?.props.width), `${width}: ${key} fits inside the card`).toBeLessThanOrEqual(Math.max(32, width) - 4)
     }
     const crab = (await v.findAll({ type: 'Raster' })).pop()

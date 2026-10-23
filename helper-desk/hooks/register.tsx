@@ -411,8 +411,10 @@ export function drawJev(state: JevState, tier: Tier | undefined, t: number, phas
 
 /** Svg pixels a grid pixel takes, and the pane columns a drawing of `gridW` pixels takes (about 6 pixels a column). */
 export function svgSize(bodyColumns: number, gridW: number) {
-  const px = bodyColumns >= PET_WIDE_FROM ? 3 : 2
-  return { width: gridW * px, height: CANVAS_H * px, columns: Math.ceil((gridW * px) / 6) }
+  // Whole pixels a grid pixel, so crispEdges keeps every cell the same size; small beside the text.
+  const px = bodyColumns >= PET_WIDE_FROM ? 2 : 1
+  const w = Math.round(gridW * px)
+  return { width: w, height: Math.round(CANVAS_H * px), columns: Math.ceil(w / 6) }
 }
 
 const cellOf = (k: string) => k.split(',').map(Number) as [number, number]
@@ -1660,6 +1662,10 @@ export const register: Register = on => {
       await gotoHelper($, e.element.split('|')[3] ?? '')
       return { element: e.element }
     }
+    if (e.element === 'jev-history') {
+      await toggleIn($, 'open', 'jev-history')
+      return { element: e.element }
+    }
     if (e.element.startsWith('group-')) {
       await toggleIn($, 'folded', e.element.slice('group-'.length))
       return { element: e.element }
@@ -2033,71 +2039,141 @@ export const register: Register = on => {
       )
     }
 
-    // One compact card per Jev call: the badge and its pick, what ran, and the judge's verdict.
-    const jevCard = (c: JevCall) => {
+    // One Jev card for the chat: the cube-bot, animated while any call is open, beside its latest decision; earlier ones fold below.
+    const JEV_ROWS = 20
+    const jevHead = (c: JevCall) => {
       const stale = c.stale === true
-      const live = !stale && (c.phase === 'asking' || c.phase === 'judging')
-      const jw = width - 4
       const pct = c.tier && c.probs ? ` ${Math.round((c.probs[c.tier] ?? 0) * 100)}%` : ''
-      const head =
-        c.phase === 'asking'
-          ? stale
-            ? 'no answer (stale)'
-            : 'asking…'
-          : c.phase === 'skipped'
-            ? `skipped${c.skipReason ? ` (${c.skipReason})` : ''}`
-            : c.tier
-              ? `${c.tier}${pct}${c.effort ? ` · ${c.effort}` : ''}`
-              : 'no pick'
-      const ran = `${c.phase === 'asking' ? 'chose' : 'ran'} ${c.chosen}${c.chosenEffort ? ` · ${c.chosenEffort}` : ''}`
-      const verdict = c.phase === 'judging' ? (stale ? 'judge never answered (stale)' : 'judging…') : c.judge ? `judge (${c.judge.model}): ${c.judge.tier} · ${c.judge.effort} — ${c.judge.reason}` : ''
-      const text = `${cut(c.description, Math.max(8, jw - 6 - head.length - 4))} → ${head}`
-      // Jev's sprite: a Raster on the terminal, an Svg elsewhere; it moves while the call is open and stands still after.
-      const state = jevStateOf(c)
-      const moving = moves && jevMoving(c)
-      const phase = jevPhaseOf(c.id)
+      return c.phase === 'asking'
+        ? stale
+          ? 'no answer (stale)'
+          : 'asking…'
+        : c.phase === 'skipped'
+          ? `skipped${c.skipReason ? ` (${c.skipReason})` : ''}`
+          : c.tier
+            ? `${c.tier}${pct}${c.effort ? ` · ${c.effort}` : ''}`
+            : 'no pick'
+    }
+    const jevVerdict = (c: JevCall) =>
+      c.phase === 'judging' ? (c.stale ? 'judge never answered (stale)' : 'judging…') : c.judge ? `judge ${c.judge.tier} · ${c.judge.effort}${c.judge.tier === c.tier ? ' ✓' : ''}` : ''
+    const jevCard = (all: JevCall[]) => {
+      if (!all.length) return null
+      const newest = [...all].reverse()
+      // The sprite follows the newest open call, or the newest call once all are final.
+      const focus = newest.find(c => jevMoving(c)) ?? newest[0]!
+      const live = newest.some(c => !c.stale && (c.phase === 'asking' || c.phase === 'judging'))
+      const jw = width - 4
+      const state = jevStateOf(focus)
+      const moving = moves && jevMoving(focus)
+      const phase = jevPhaseOf(focus.id)
       const gw = jevGridW(state)
       const art = jevCanvas(state)
       const svgBox = svgSize(e.props.bodyColumns, gw)
       let sprite = null
-      // The sprite's own columns; beside the text it also takes a gutter, above the text it needs none.
+      // The sprite's own columns; beside the list it also takes a gutter, above the list it needs none.
       const artW = Svg ? svgBox.columns : art.columns
       const jevStacked = jw - (artW + 1) < MIN_TEXT
       const spriteW = jevStacked ? artW : artW + 1
       if (Svg) {
         sprite = (
-          <Box key={`jev-art-${c.id}`} width={spriteW} flexShrink={0}>
-            <Svg source={jevSvg(state, c.tier, moving, phase, e.props.bodyColumns)} alt="Jev, the cube-bot" width={svgBox.width} height={svgBox.height} />
+          <Box key="jev-art" width={spriteW} flexShrink={0}>
+            <Svg source={jevSvg(state, focus.tier, moving, phase, e.props.bodyColumns)} alt="Jev, the cube-bot" width={svgBox.width} height={svgBox.height} />
           </Box>
         )
       } else if (Raster) {
-        pets.set(`jev-${c.id}`, { kind: 'jev', requestId: e.requestId, id: c.id, columns: art.columns, rows: art.rows })
+        pets.set(`jev-${focus.id}`, { kind: 'jev', requestId: e.requestId, id: focus.id, columns: art.columns, rows: art.rows })
         sprite = (
-          <Box key={`jev-art-${c.id}`} width={spriteW} flexShrink={0}>
-            <Raster key={`jev-${c.id}`} columns={art.columns} rows={art.rows} cells={drawJev(state, c.tier, now, phase, !moving)} />
+          <Box key="jev-art" width={spriteW} flexShrink={0}>
+            <Raster key={`jev-${focus.id}`} columns={art.columns} rows={art.rows} cells={drawJev(state, focus.tier, now, phase, !moving)} />
           </Box>
         )
       }
+      const lw = jevStacked ? jw : jw - spriteW
+      // The latest decision, every line labeled so it reads without remembering what Jev is.
+      const latest = newest[0]!
+      const latestOpen = !latest.stale && (latest.phase === 'asking' || latest.phase === 'judging')
+      const pct = latest.tier && latest.probs ? ` · ${Math.round((latest.probs[latest.tier] ?? 0) * 100)}% sure` : ''
+      const status =
+        latest.stale === true
+          ? 'stale: no answer came back'
+          : latest.phase === 'asking'
+            ? 'asking Jev which model fits…'
+            : latest.phase === 'answered'
+              ? 'running; the judge reviews it after'
+              : latest.phase === 'judging'
+                ? 'judge is reviewing the pick…'
+                : latest.phase === 'skipped'
+                  ? `skipped${latest.skipReason ? ` (${latest.skipReason})` : ''}`
+                  : 'done'
+      const facts: [string, string][] = [
+        ['Task', latest.description],
+        ['Status', status],
+        ['Jev pick', latest.phase === 'asking' ? '…' : latest.tier ? `${latest.tier}${pct}${latest.effort ? ` · ${latest.effort} effort` : ''}` : 'none'],
+        [latest.phase === 'asking' ? 'Chosen' : 'Ran', `${latest.chosen}${latest.chosenEffort ? ` · ${latest.chosenEffort} effort` : ''}`],
+      ]
+      if (latest.judge) {
+        facts.push(['Judge', `${latest.judge.tier} · ${latest.judge.effort} effort${latest.judge.tier === latest.tier ? ' ✓ agrees' : ' ✗ disagrees'} (by ${latest.judge.model})`])
+        facts.push(['Why', latest.judge.reason])
+      }
+      const LABEL_W = 10
+      const fact = ([label, value]: [string, string]) => (
+        <Box key={`jev-fact-${label}`} flexDirection="row" width={lw}>
+          <Box width={LABEL_W} flexShrink={0}>
+            <Text dimColor>{label}</Text>
+          </Box>
+          <Text key={`jev-val-${label}`} weight={label === 'Status' && latestOpen ? 'bold' : undefined} color={label === 'Status' && latestOpen ? 'suggestion' : undefined} wrap="truncate-end">
+            {cut(value, Math.max(4, lw - LABEL_W))}
+          </Text>
+        </Box>
+      )
+      // Earlier decisions fold behind a toggle, one compact row pair each.
+      const earlier = newest.slice(1)
+      const histOpen = view.open.includes('jev-history')
+      const shown = earlier.slice(0, JEV_ROWS)
+      const rows = shown.map(c => {
+        const head = jevHead(c)
+        const verdict = jevVerdict(c)
+        return (
+          <Box key={`jev-row-${c.id}`} flexDirection="column" width={jw} marginTop={1}>
+            <Text key={`jev-pick-${c.id}`} wrap="truncate-end">
+              {/* The pick is what matters on a narrow pane: the description gives way first. */}
+              {jw - head.length - 3 >= 4 ? `${cut(c.description, jw - head.length - 3)} → ${head}` : `→ ${head}`}
+            </Text>
+            <Text key={`jev-ran-${c.id}`} dimColor wrap="truncate-end">
+              {cut(`  ${c.phase === 'asking' ? 'chose' : 'ran'} ${c.chosen}${c.chosenEffort ? ` · ${c.chosenEffort}` : ''}${verdict ? `  ·  ${verdict}` : ''}`, jw)}
+            </Text>
+          </Box>
+        )
+      })
+      const more = earlier.length - shown.length
       return (
-        <Box key={`jev-${c.id}`} flexDirection="column" width={width} borderStyle="round" borderColor="suggestion" borderDimColor={!live} paddingX={1} marginBottom={1}>
-          <Box key={`jev-head-${c.id}`} flexDirection="row" gap={1} width={jw}>
+        <Box key="jev" flexDirection="column" width={width} borderStyle="round" borderColor="suggestion" borderDimColor={!live} paddingX={1} marginBottom={1}>
+          <Box key="jev-head" flexDirection="row" gap={1} width={jw}>
             <Text weight="bold" color={INK} backgroundColor="suggestion">
               {' Jev '}
             </Text>
-            <Text weight={live ? 'bold' : undefined} color={live ? 'suggestion' : undefined} wrap="truncate-end">
-              {`· ${text}`}
+            <Text dimColor wrap="truncate-end">
+              {`· model router · ${all.length} decision${all.length === 1 ? '' : 's'}${live ? ' · working' : ''}`}
             </Text>
           </Box>
-          <Box key={`jev-body-${c.id}`} flexDirection={jevStacked ? 'column' : 'row'} width={jw}>
+          <Box key="jev-body" flexDirection={jevStacked ? 'column' : 'row'} width={jw} marginTop={1}>
             {sprite}
-            <Text key={`jev-ran-${c.id}`} dimColor wrap="truncate-end">
-              {cut(ran, jevStacked ? jw : jw - spriteW)}
-            </Text>
+            <Box key="jev-latest" flexDirection="column" width={lw}>
+              {facts.map(fact)}
+            </Box>
           </Box>
-          {verdict ? (
-            <Text key={`jev-verdict-${c.id}`} color={c.phase === 'judging' ? 'suggestion' : undefined} dimColor={c.phase !== 'judging'} wrap="truncate-end">
-              {cut(verdict, jw)}
-            </Text>
+          {earlier.length ? (
+            <Box key="jev-history" flexDirection="column" width={jw} marginTop={1}>
+              <Button key="jev-history" plain dimColor onPress={() => undefined}>
+                <Text dimColor wrap="truncate-end">{`${histOpen ? '▾' : '▸'} ${earlier.length} earlier decision${earlier.length === 1 ? '' : 's'}`}</Text>
+              </Button>
+              {histOpen ? rows : null}
+              {histOpen && more > 0 ? (
+                <Text key="jev-more" dimColor wrap="truncate-end">
+                  {`+${more} older`}
+                </Text>
+              ) : null}
+            </Box>
           ) : null}
         </Box>
       )
@@ -2105,7 +2181,7 @@ export const register: Register = on => {
 
     // The groups build the cards, and the cards register their pets: draw them before the frame timer looks.
     const groups = [group('running', 'Running', running, GOOD, INK), group('finished', 'Finished', finished, WARN, INK), group('stopped', 'Stopped', stopped, BAD, INK)]
-    const jevCards = calls.map(jevCard)
+    const jevCards = jevCard(calls)
     // Starts the frame timer when this draw mounted the first running pet; a no-op otherwise.
     syncTimers($)
 
