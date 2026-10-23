@@ -464,4 +464,51 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await clock.advance(30_000)
     expect(writes - before, 'no writes during a turn').toBe(0)
   })
+
+  test(`the countdown survives a helper's turn and a switch-off during a turn (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    let writes = 0
+    let flag = '{}'
+    const isSwitches = (e: unknown) => (e as { path: string }).path.replace(/\\/g, '/').endsWith('/.claude/mods/switches.json')
+    on('session.start', async ($, e) => ({ cwd: e.cwd }) as never)
+    on('turn.start', async () => ({ turnId: 't' }) as never)
+    on('command.register', async () => ({ value: undefined }) as never)
+    const clock = mock.clock(on, { now: 1_000_000 })
+    on('session.id', async () => ({ value: 'sid' }) as never)
+    on('session.usage', async () => ({ value: { context: { tokens: 1000, window: 1_000_000 } } }) as never)
+    on('process.run', async () => ({ value: { exitCode: 0, stdout: '5m\n', stderr: '' } }) as never)
+    on('fs.exists', async ($, e) => ({ value: isSwitches(e) }) as never)
+    on('fs.read', async ($, e) => ({ value: isSwitches(e) ? flag : '' }) as never)
+    on('fs.write', async () => ({ value: undefined }) as never)
+    on('store.get', async () => ({ value: undefined }) as never)
+    on('store.set', async () => ({ value: undefined }) as never)
+    on('turn.complete', async () => ({ text: '' }) as never)
+    on('state.set', async ($, e, next) => {
+      writes++
+      return next(e)
+    })
+    const ticks = async () => {
+      const before = writes
+      await clock.advance(5_000)
+      return writes - before
+    }
+    await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface, isInteractive: true } as never)
+    await $.turn.complete({ answer: '' } as never)
+    await clock.settle()
+    expect(await ticks(), 'ticking after the main reply').toBeGreaterThanOrEqual(4)
+
+    // A helper's turn starts after the main turn ended; nothing ever completes it as the main loop.
+    await $.turn.start({ text: 'helper', turnId: 'h', agentId: 'a1' } as never)
+    await clock.settle()
+    expect(await ticks(), 'a helper turn does not freeze the countdown').toBeGreaterThanOrEqual(4)
+
+    // Switched off in the middle of a main turn, then back on.
+    await $.turn.start({ text: 'go', turnId: 't' } as never)
+    flag = JSON.stringify({ 'cache-clock': false })
+    await clock.advance(3_100)
+    await $.turn.complete({ answer: '' } as never)
+    await clock.settle()
+    flag = '{}'
+    await clock.advance(3_100)
+    expect(await ticks(), 'ticking again after off then on').toBeGreaterThanOrEqual(4)
+  })
 }

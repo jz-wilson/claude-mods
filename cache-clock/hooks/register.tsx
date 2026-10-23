@@ -329,18 +329,18 @@ export const register: Register = on => {
   on('turn.start', async ($, e, next) => {
     if (off) return next(e)
     // Should the engine ever raise a turn for the ping's own fork, it is not the person's turn.
-    if (!(pinging && e.text === PING_PROMPT)) working = true
+    // A helper's turn does not stop the main chat's band, and only a main-loop complete clears this.
+    if (e.agentId === undefined && !(pinging && e.text === PING_PROMPT)) working = true
     return next(e)
   })
 
   on('turn.complete', async ($, e, next) => {
+    // Clear before anything can return early or throw, so the countdown never stays frozen.
+    if (e.agentId === undefined) working = false
     if (off) return next(e)
     const result = await next(e)
     // A helper's turn does not touch the main chat's cache.
-    if (e.agentId === undefined) {
-      working = false
-      void restart($).catch(err => log($, `restart failed: ${String(err)}`))
-    }
+    if (e.agentId === undefined) void restart($).catch(err => log($, `restart failed: ${String(err)}`))
     return result
   })
 
