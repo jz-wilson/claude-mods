@@ -1,4 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
+import type { FoundElement } from 'claude-code/testing'
+import type { ThemeKey } from 'claude-code'
 
 import { BAR, FADE, mask, redact } from './mask'
 
@@ -247,3 +249,51 @@ test('mask: names only where the text says it is a person', async () => {
   const line = 'From: Jane Doe <jane@x.com>, call +44 7700 900123 about $4,250.00'
   expect(mask(line).length, 'bars keep the line length').toBe(line.length)
 })
+
+const THEME_KEYS: readonly ThemeKey[] = [
+  'text', 'inverseText', 'inactive', 'subtle', 'suggestion', 'remember', 'success', 'error',
+  'warning', 'merged', 'claude', 'permission', 'planMode', 'autoAccept', 'promptBorder',
+  'bashBorder', 'ide', 'diffAdded', 'diffRemoved', 'diffAddedDimmed', 'diffRemovedDimmed',
+  'diffAddedWord', 'diffRemovedWord',
+]
+
+function rawColors(elements: FoundElement[]): string[] {
+  return elements.flatMap(element =>
+    ['color', 'borderColor', 'backgroundColor']
+      .map(prop => [prop, element.props[prop]] as const)
+      .filter(([, value]) => value !== undefined && !THEME_KEYS.includes(value as ThemeKey))
+      .map(([prop, value]) => `${element.type}.${prop}=${String(value)}`),
+  )
+}
+
+for (const surface of ['desktop', 'terminal'] as const) {
+  test(`the band uses theme colors, truncates, and yields to a survey at 40, 80 and 144 columns (${surface})`, async ($, on) => {
+    on('session.start', async ($, e) => ({ cwd: e.cwd }) as never)
+    on('session.id', async () => ({ value: 'sid' }) as never)
+    on('command.register', async () => ({ value: { command: 'screen-share' } }) as never)
+    on('store.get', async () => ({ value: true }) as never)
+    on('store.set', async () => ({ value: undefined }) as never)
+    on('ui.status', async () => ({ value: undefined }) as never)
+    const clock = mock.clock(on, { now: 0 })
+    on('ui.render', { component: 'AbovePrompt' }, async ($, e) => {
+      const { Text } = $.ui.resolve(e)
+      return <Text>REST</Text>
+    })
+    await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface, isInteractive: true } as never)
+    await clock.settle()
+
+    for (const bodyColumns of [40, 80, 144]) {
+      const props = { isWorking: false, hasSurvey: false, maxRows: 20, bodyColumns } as never
+      const v = await $.ui.mount({ plugin: 'screen-share', surface, component: 'AbovePrompt', props })
+      expect(await v.find({ key: 'off' }), `band at ${bodyColumns}`).toBeDefined()
+      expect(rawColors(await v.findAll({})), `no raw color at ${bodyColumns}`).toEqual([])
+      const line = await v.find({ type: 'Text', text: /Screen-share mode/ })
+      expect(line?.props.wrap, `band line truncates at ${bodyColumns}`).toBe('truncate-end')
+    }
+
+    const survey = { isWorking: false, hasSurvey: true, maxRows: 20, bodyColumns: 80 } as never
+    const v = await $.ui.mount({ plugin: 'screen-share', surface, component: 'AbovePrompt', props: survey })
+    expect(await v.find({ key: 'off' }), 'yields to a survey').toBeUndefined()
+    expect(await v.find({ text: 'REST' }), 'survey passes through').toBeDefined()
+  })
+}

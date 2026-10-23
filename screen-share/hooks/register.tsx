@@ -13,7 +13,6 @@ import { BAR, FADE, mask, maskDeep } from './mask'
 // itself. Drawing our own rows would lose the engine's markdown.
 
 const ON = { plugin: 'screen-share', key: 'on' } as const
-const ACCENT = '#d97757'
 const BAND_TEXT = ' Screen-share mode: emails, phones, amounts and names hidden on screen'
 
 // Module variables reset on a reload; the mode itself lives in $.state and $.store.
@@ -218,10 +217,12 @@ export const register: Register = on => {
       <Box flexDirection="column">
         {rest}
         <Box flexDirection="row" alignItems="center" justifyContent="space-between" gap={1}>
-          <Text wrap="truncate-end">
-            <Text color={ACCENT}>●</Text>
-            <Text dimColor>{BAND_TEXT}</Text>
-          </Text>
+          <Box flexShrink={1}>
+            <Text wrap="truncate-end">
+              <Text color="claude">●</Text>
+              <Text dimColor>{BAND_TEXT}</Text>
+            </Text>
+          </Box>
           <Button key="off" label="Turn off" onPress={noop} />
         </Box>
       </Box>
