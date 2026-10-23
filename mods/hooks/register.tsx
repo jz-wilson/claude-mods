@@ -344,7 +344,8 @@ async function poll($: EngineInterface) {
   $.ui.invalidate('ui.render')
 }
 
-// The four actions behind the buttons. Each leaves its result in NOTE and returns it.
+// The four actions behind the buttons. Each returns what it did; a real outcome is also left in NOTE,
+// while an unknown name or a second install press changes nothing, as the buttons always did.
 async function say($: EngineInterface, text: string) {
   await $.state.set(NOTE, text)
   return text
@@ -352,7 +353,7 @@ async function say($: EngineInterface, text: string) {
 
 async function toggleMod($: EngineInterface, name: string) {
   const mod = (await getRows($)).find(m => m.name === name && m.switchable)
-  if (!mod) return say($, `No switchable mod named ${name}.`)
+  if (!mod) return `No switchable mod named ${name}.`
   try {
     const nowOff = await flip($, name)
     return await say($, `${mod.title} is ${nowOff ? 'off' : 'on'} in every chat.`)
@@ -364,7 +365,7 @@ async function toggleMod($: EngineInterface, name: string) {
 
 async function showMod($: EngineInterface, name: string) {
   const mod = (await getRows($)).find(m => m.name === name && m.hide && m.switchable)
-  if (!mod) return say($, `${name} has no Shown/Hidden switch.`)
+  if (!mod) return `${name} has no Shown/Hidden switch.`
   try {
     if (isOff(await readSwitches($), name)) return await say($, `${mod.title} is off. Turn it on first.`)
     const nowHidden = await flipHidden($, name)
@@ -379,8 +380,8 @@ async function showMod($: EngineInterface, name: string) {
 // Install: a mod a marketplace offers, installed for this user; it loads on /reload-plugins.
 async function installMod($: EngineInterface, name: string) {
   const mod = (await getRows($)).find(m => m.name === name && m.market)
-  if (!mod?.market) return say($, `${name} is not offered by a marketplace.`)
-  if (installing.has(name)) return say($, `${mod.title} is already installing.`)
+  if (!mod?.market) return `${name} is not offered by a marketplace.`
+  if (installing.has(name)) return `${mod.title} is already installing.`
   installing.add(name)
   try {
     await $.state.set(NOTE, `Installing ${mod.title}…`)
@@ -399,7 +400,7 @@ async function installMod($: EngineInterface, name: string) {
 // Open: for a side pane that is On and Shown, asks this chat to open it again.
 async function openMod($: EngineInterface, name: string) {
   const mod = (await getRows($)).find(m => m.name === name && m.pane && m.switchable)
-  if (!mod) return say($, `${name} has no side pane to open.`)
+  if (!mod) return `${name} has no side pane to open.`
   try {
     const json = await readSwitches($)
     if (isOff(json, name) || isHidden(json, name)) return await say($, `${mod.title} is ${isOff(json, name) ? 'off' : 'hidden'}. Turn it on and show it first.`)
@@ -442,8 +443,8 @@ export const register: Register = on => {
 
   on('command.run', { command: 'mods' }, async ($, e) => {
     const [verb = '', name = ''] = e.args.trim().split(/\s+/)
-    if (verb) {
-      if (!VERBS.includes(verb) || !name) return { text: `Usage: /mods, or /mods ${VERBS.join('|')} <mod name>` }
+    if (VERBS.includes(verb)) {
+      if (!name) return { text: `Usage: /mods ${verb} <mod name>` }
       return { text: await runVerb($, verb, name) }
     }
     try {

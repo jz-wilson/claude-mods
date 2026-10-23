@@ -359,21 +359,31 @@ function rawColors(elements: FoundElement[]): string[] {
 }
 
 // A machine with every known mod installed and one switches.json, for the pane tests below.
-function machine($: Parameters<Parameters<typeof test>[2]>[0], on: Parameters<Parameters<typeof test>[2]>[1]) {
+type Opts = { installed?: () => string; opened?: string[]; run?: () => Promise<void>; extra?: Record<string, string> }
+function machine(on: Parameters<Parameters<typeof test>[2]>[1], opts: Opts = {}) {
   const files: Record<string, string> = {}
   on('session.start', async ($, e) => ({ cwd: e.cwd }) as never)
   on('session.id', async () => ({ value: 'sid-123' }) as never)
   on('command.register', async () => ({ value: undefined }) as never)
-  mock.clock(on, { now: new Date(2026, 9, 15, 21, 0).getTime() })
-  on('ui.open', async () => ({ value: { isPlaced: true } }) as never)
-  on('process.run', async () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }) as never)
+  const clock = mock.clock(on, { now: new Date(2026, 9, 15, 21, 0).getTime() })
+  on('ui.open', async (_$, e) => {
+    opts.opened?.push((e as { id: string }).id)
+    return { value: { isPlaced: true } } as never
+  })
+  on('process.run', async () => {
+    await opts.run?.()
+    return { value: { exitCode: 0, stdout: '', stderr: '' } } as never
+  })
+  const extraKey = (path: string) => Object.keys(opts.extra ?? {}).find(k => path.endsWith(k))
   on('fs.exists', async ($, e) => {
     const path = (e as { path: string }).path.replace(/\\/g, '/')
-    return { value: path in files || path.endsWith(INSTALLED_AT) } as never
+    return { value: path in files || path.endsWith(INSTALLED_AT) || extraKey(path) !== undefined } as never
   })
   on('fs.read', async ($, e) => {
     const path = (e as { path: string }).path.replace(/\\/g, '/')
-    if (path.endsWith(INSTALLED_AT)) return { value: INSTALLED } as never
+    if (path.endsWith(INSTALLED_AT)) return { value: opts.installed?.() ?? INSTALLED } as never
+    const k = extraKey(path)
+    if (k !== undefined) return { value: opts.extra?.[k] } as never
     if (!(path in files)) throw new Error(`ENOENT ${path}`)
     return { value: files[path] } as never
   })
@@ -384,26 +394,27 @@ function machine($: Parameters<Parameters<typeof test>[2]>[0], on: Parameters<Pa
   })
   on('fs.list', async () => ({ value: [] }) as never)
   mock.env(on, {})
-  return files
+  return Object.assign(files, { clock })
 }
 
 for (const surface of ['desktop', 'terminal'] as const) {
   test(`the pane fits 40, 80 and 144 columns with theme colors only (${surface})`, { timeoutMs: 20000 }, async ($, on) => {
-    machine($, on)
+    machine(on)
     await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface, isInteractive: true } as never)
     for (const bodyColumns of [40, 80, 144]) {
       const v = await $.ui.mount({ plugin: 'mods', surface, component: 'Pane', requestId: 'mods', props: { ...(props as object), bodyColumns } as never })
       expect(rawColors(await v.findAll({})), `no raw color at ${bodyColumns}`).toEqual([])
-      // Each switchable row leaves its buttons room: title column plus buttons never exceed the body.
-      const widths = (await v.findAll({ type: 'Box' })).map(b => Number(b.props.width)).filter(w => Number.isFinite(w) && w > 0)
-      expect(Math.max(...widths), `nothing wider than ${bodyColumns}`).toBeLessThanOrEqual(bodyColumns)
-      for (const w of widths) expect(w + 26 <= bodyColumns || w === bodyColumns, `row title ${w} leaves 26 for buttons at ${bodyColumns}`).toBe(true)
+      // Title column is exactly what is left after the buttons; the pane itself is the full body.
+      const cols = Math.max(24, bodyColumns)
+      const widths = [...new Set((await v.findAll({ type: 'Box' })).map(b => Number(b.props.width)).filter(w => Number.isFinite(w) && w > 0))].sort((x, y) => x - y)
+      expect(widths, `box widths at ${bodyColumns}`).toEqual([Math.max(10, cols - 26), cols])
       await v.unmount()
     }
   })
 
   test(`the pane shows a focus hint only while unfocused, and every button has a slash twin (${surface})`, { timeoutMs: 20000 }, async ($, on) => {
-    const files = machine($, on)
+    const opened: string[] = []
+    const files = machine(on, { opened })
     await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface, isInteractive: true } as never)
     const hint = { text: /ctrl\+x tab or click to focus/ } as const
     const idle = await $.ui.mount({ plugin: 'mods', surface, component: 'Pane', requestId: 'mods', props })
@@ -423,6 +434,49 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(Object.keys(files).some(k => k.endsWith('/.claude/mods/.open-helper-desk-sid-123')), 'show leaves the open request').toBe(true)
     expect(await run('open chat-inventory'), 'open asks the pane').toContain('Chat Inventory opens in this chat')
     expect(await run('toggle nonsense'), 'unknown name is said, not thrown').toContain('No switchable mod named nonsense')
-    expect(await run('bogus x'), 'unknown verb gives usage').toContain('Usage: /mods')
+    expect(await run('toggle'), 'a verb without a name gives usage').toContain('Usage: /mods toggle')
+    expect(opened, 'usage opens nothing').toEqual([])
+    await run('foo')
+    expect(opened, '/mods foo opens the pane as before').toEqual(['mods'])
+  })
+}
+
+for (const surface of ['desktop', 'terminal'] as const) {
+  test(`a press on an unknown name, or a second Install press, leaves the note alone (${surface})`, { timeoutMs: 20000 }, async ($, on) => {
+    let release = () => {}
+    const gate = new Promise<void>(r => (release = r))
+    let installs = 0
+    let gone = false
+    const market = '/.claude/plugins/marketplaces/claude-mods'
+    const { clock } = machine(on, {
+      installed: () => (gone ? installedJson(KNOWN.filter(n => n !== 'cache-clock')) : INSTALLED),
+      run: async () => {
+        installs += 1
+        await gate
+      },
+      extra: {
+        '/.claude/plugins/known_marketplaces.json': JSON.stringify({ 'claude-mods': { installLocation: `/h${market}` } }),
+        [`${market}/.claude-plugin/marketplace.json`]: JSON.stringify({ plugins: [{ name: 'fresh-mod', source: './fresh-mod' }] }),
+        [`${market}/fresh-mod/.claude-plugin/plugin.json`]: JSON.stringify({ name: 'fresh-mod' }),
+        [`${market}/fresh-mod/hooks/hooks.json`]: JSON.stringify({ modules: ['./register.tsx'] }),
+      },
+    })
+    await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface, isInteractive: true } as never)
+    const v = await $.ui.mount({ plugin: 'mods', surface, component: 'Pane', requestId: 'mods', props })
+
+    await v.press({ key: 'toggle-cache-clock' })
+    expect(await v.find({ text: 'Cache Clock is off in every chat.' })).toBeDefined()
+    // A stale button: Cache Clock is uninstalled after the pane drew it. Pressing it is silent.
+    gone = true
+    await clock.advance(11_000)
+    await v.press({ key: 'toggle-cache-clock' })
+    expect(await v.find({ text: 'Cache Clock is off in every chat.' }), 'unknown name leaves the note').toBeDefined()
+
+    const first = v.press({ key: 'install-fresh-mod' })
+    await v.press({ key: 'install-fresh-mod' })
+    expect(installs, 'second press starts nothing').toBe(1)
+    expect(await v.find({ text: 'Installing Fresh Mod…' }), 'second press leaves Installing').toBeDefined()
+    release()
+    await first
   })
 }
