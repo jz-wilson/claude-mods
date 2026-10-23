@@ -8,6 +8,7 @@ Mods for Claude Code.
 | [filetree](filetree) | Fork of [data-goblin/claude-code-filetree](https://github.com/data-goblin/claude-code-filetree) that shows only the files Claude touched this session; the header's `◆` button toggles to the whole tree. |
 | [brain-dump](brain-dump) | Catches a long, loose prompt before it is sent, asks up to 3 questions on gaps or clashes, then fills the prompt box with a four-part prompt (the job, the why, the guardrails, done means). |
 | [helper-desk](helper-desk) | Task list above the prompt that follows Claude's to-do list, plus a side pane with one live card per subagent. |
+| [helpin-per](helpin-per) | Pane listing open Helpin PER-* tasks; pick one to have Claude start working on it. |
 | [cache-clock](cache-clock) | Countdown above the prompt until the chat's cache goes cold, with a Keep warm button. |
 | [handoff](handoff) | When a chat gets very long, writes a handoff prompt and starts a fresh chat with it (`/refresh <focus>`; the handoff tells the new chat to run `/pickup`). |
 | [reflect](reflect) | When you correct Claude, offers to save the fix as a lasting rule in `CLAUDE.md` or a rules folder. |

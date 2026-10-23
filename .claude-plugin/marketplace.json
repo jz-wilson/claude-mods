@@ -11,6 +11,7 @@
     { "name": "filetree", "source": "./filetree" },
     { "name": "handoff", "source": "./handoff" },
     { "name": "helper-desk", "source": "./helper-desk" },
+    { "name": "helpin-per", "source": "./helpin-per" },
     { "name": "mods", "source": "./mods" },
     { "name": "reflect", "source": "./reflect" },
     { "name": "replay-theater", "source": "./replay-theater" },
