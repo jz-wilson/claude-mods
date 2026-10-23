@@ -459,13 +459,13 @@ export const register: Register = (on, options) => {
             <Text color="claude">●</Text>
             <Text weight="bold"> Save this as a rule?</Text>
           </Text>
-          <Text wrap="truncate-end">"{b.rule}"</Text>
+          <Text>"{b.rule}"</Text>
           <Box flexDirection="row" flexWrap="wrap" gap={1}>
             <Button key="everywhere" label="Save everywhere" variant="primary" onPress={noop} />
             <Button key="vault" label="Save to vault" variant="secondary" onPress={noop} />
             <Button key="skip" label="Skip" role="dismiss" onPress={noop} />
           </Box>
-          {b.note ? <Text color="error" wrap="truncate-end">{b.note}</Text> : null}
+          {b.note ? <Text color="error">{b.note}</Text> : null}
         </Box>
       </Box>
     )

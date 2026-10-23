@@ -40,7 +40,7 @@ function rawColors(elements: FoundElement[]): string[] {
 const bandProps = (bodyColumns: number, hasSurvey = false) =>
   ({ hasSurvey, isWorking: false, maxRows: 10, bodyColumns, scroll: { offset: 0, bodyRows: 10 }, view: {} }) as never
 
-async function withReplay($: Parameters<Parameters<typeof test>[1]>[0], on: Parameters<Parameters<typeof test>[1]>[1], surface: 'terminal' | 'desktop') {
+async function withReplay($: Parameters<Parameters<typeof test>[1]>[0], on: Parameters<Parameters<typeof test>[1]>[1], surface: 'terminal' | 'desktop', edits = 1) {
   on('session.start', async ($, e) => ({ cwd: e.cwd }) as never)
   on('session.id', async () => ({ value: 'sid' }) as never)
   on('session.cwd', async () => ({ value: '/Users/test/project' }) as never)
@@ -59,7 +59,7 @@ async function withReplay($: Parameters<Parameters<typeof test>[1]>[0], on: Para
   const clock = mock.clock(on, { now: 0 })
   await $.session.start({ source: 'startup', cwd: '/Users/test/project', surface, isInteractive: true } as never)
   await clock.settle()
-  await $.tool.call({ tool: 'Edit', file_path: '/Users/test/project/src/a-long-file-name.ts', old_string: 'one' + String.fromCharCode(10) + 'two', new_string: 'one' + String.fromCharCode(10) + 'three' } as never)
+  for (let n = 0; n < edits; n++) await $.tool.call({ tool: 'Edit', file_path: '/Users/test/project/src/a-long-file-name.ts', old_string: 'one' + String.fromCharCode(10) + 'two', new_string: 'one' + String.fromCharCode(10) + 'three' } as never)
   await $.turn.complete({ answer: 'ok', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' } as never)
   await clock.settle()
   return clock
@@ -88,13 +88,15 @@ for (const surface of ['terminal', 'desktop'] as const) {
 }
 
 test('/replay next, prev and close drive the open view', async ($, on) => {
-  const clock = await withReplay($, on, 'terminal')
-  const pending = $.command.run({ command: 'replay', args: 'close' } as never)
+  const clock = await withReplay($, on, 'terminal', 3)
+  const text = async (args: string) => String(((await $.command.run({ command: 'replay', args } as never)) as { text?: string }).text)
+  const pending = text('')
   await clock.advance(300)
-  const idle = await pending
-  expect(String((idle as { text?: string }).text), 'a subcommand with nothing open just opens it').toContain('1 edits')
-  const next = await $.command.run({ command: 'replay', args: 'next' } as never)
-  expect(String((next as { text?: string }).text)).toContain('step 1 of 1')
-  const closed = await $.command.run({ command: 'replay', args: 'close' } as never)
-  expect(String((closed as { text?: string }).text)).toContain('closed')
+  expect(await pending, 'opens with three edits').toContain('3 edits')
+  expect(await text('prev'), 'clamps at the first step').toContain('step 1 of 3')
+  expect(await text('next')).toContain('step 2 of 3')
+  expect(await text('next')).toContain('step 3 of 3')
+  expect(await text('next'), 'clamps at the last step').toContain('step 3 of 3')
+  expect(await text('prev')).toContain('step 2 of 3')
+  expect(await text('close')).toContain('closed')
 })

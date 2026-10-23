@@ -21,6 +21,7 @@ The patterns it demonstrates:
 - Recording from `tool.call` and always passing the call on with `next(e)`.
 - Grouping work by turn with `turn.start` and `turn.complete`, and skipping subagent turns.
 - A slash command (`/replay`) registered from `session.start` and handled in `command.run`.
+- `/replay next`, `/replay prev` and `/replay close` drive the open view, mirroring its buttons.
 - A `Pane` with `Button` elements and hotkeys, with a fallback to the `AbovePrompt` band.
 
 ## Demo

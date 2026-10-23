@@ -297,7 +297,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
       const ui = await $.ui.mount({ plugin: 'reflect', surface, component: 'AbovePrompt', props: full })
       expect(await ui.find({ key: 'everywhere' }), `offer at ${bodyColumns}`).toBeDefined()
       expect(rawColors(await ui.findAll({})), `offer colors at ${bodyColumns}`).toEqual([])
-      expect(await ui.find({ text: /Never use em dashes/ }), 'rule drawn').toBeDefined()
+      const rule = await ui.find({ type: 'Text', text: /^"Never use em dashes/ })
+      expect(rule?.text, `full rule text at ${bodyColumns}`).toBe('"Never use em dashes in newsletter copy."')
+      expect(rule?.props.wrap, 'rule is content, so it wraps').not.toBe('truncate-end')
       await ui.unmount()
     }
 
