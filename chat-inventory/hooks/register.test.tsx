@@ -1,4 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
+import type { FoundElement } from 'claude-code/testing'
+import type { ThemeKey } from 'claude-code'
 
 type On = Parameters<NonNullable<Parameters<typeof test>[2]>>[1]
 
@@ -337,7 +339,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(done?.props.strikethrough, 'done text struck through').toBe(true)
     expect(done?.props.dimColor, 'done text dim').toBe(true)
     const now = await ui.find({ type: 'Text', text: /^Writing the code$/ })
-    expect(now?.props.bold, 'in-progress uses activeForm, bold').toBe(true)
+    expect(now?.props.weight, 'in-progress uses activeForm, bold').toBe('bold')
     expect(await ui.find({ text: /^Run the checks$/ }), 'pending step').toBeDefined()
     expect(await ui.find({ text: /No to-do list yet/ }), 'no empty line').toBeUndefined()
   })
@@ -385,5 +387,89 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(empty?.props.dimColor, 'dim').toBe(true)
     expect(await ui.find({ text: /of \d+$/ }), 'no count without a plan').toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /^Files read$/ }), 'Files read line').toBeDefined()
+  })
+}
+
+// Functional color must be a theme key; raw color is for the connector badge SVG markup only.
+const THEME_KEYS: readonly ThemeKey[] = [
+  'text', 'inverseText', 'inactive', 'subtle', 'suggestion', 'remember', 'success', 'error',
+  'warning', 'merged', 'claude', 'permission', 'planMode', 'autoAccept', 'promptBorder',
+  'bashBorder', 'ide', 'diffAdded', 'diffRemoved', 'diffAddedDimmed', 'diffRemovedDimmed',
+  'diffAddedWord', 'diffRemovedWord',
+]
+const COLOR_PROPS = ['color', 'borderColor', 'backgroundColor']
+
+function rawColors(elements: FoundElement[]): string[] {
+  return elements.flatMap(element =>
+    COLOR_PROPS.map(prop => [prop, element.props[prop]] as const)
+      .filter(([, value]) => value !== undefined && !THEME_KEYS.includes(value as ThemeKey))
+      .map(([prop, value]) => `${element.type}.${prop}=${String(value)}`),
+  )
+}
+
+for (const surface of ['desktop', 'terminal'] as const) {
+  test(`the pane uses theme colors and fits 40, 80 and 144 columns (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const clock = setup(on, {}, [], [])
+    await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface, isInteractive: true } as never)
+    await clock.settle()
+    const call = $.tool.call as unknown as (input: Record<string, unknown>) => Promise<unknown>
+    await call({ tool: 'mcp__00000000-0000-0000-0000-00000000000a__search_threads', tool_use_id: 't1', query: 'offer' })
+    await call({ tool: 'Read', tool_use_id: 'r1', file_path: '/Users/test/x/offer.md' })
+    await call({
+      tool: 'TodoWrite',
+      tool_use_id: 'w1',
+      todos: [
+        { content: 'Read the brief', status: 'completed', activeForm: 'Reading the brief' },
+        { content: 'Write the code', status: 'in_progress', activeForm: 'Writing the code' },
+      ],
+    })
+    await clock.settle()
+
+    for (const width of [40, 80, 144]) {
+      const props = { title: 'In this chat', isFocused: false, bodyColumns: width, placement: 'dock' } as never
+      const ui = await $.ui.mount({ plugin: 'chat-inventory', surface, component: 'Pane', requestId: 'chat-inventory', props })
+      expect(rawColors(await ui.findAll({})), `no raw colors at ${width}`).toEqual([])
+      for (const text of await ui.findAll({ type: 'Text' })) {
+        expect(String(text.text ?? '').length, `a line fits ${width} columns`).toBeLessThanOrEqual(width)
+      }
+      for (const box of await ui.findAll({ type: 'Box' })) {
+        const w = box.props.width
+        if (typeof w === 'number') expect(w, `a box fits ${width} columns`).toBeLessThanOrEqual(Math.max(20, width))
+      }
+      await ui.unmount()
+    }
+  })
+
+  test(`an unfocused pane shows the focus hint; /inventory hide, up and down mirror the buttons (${surface})`, { timeoutMs: 30000 }, async ($, on) => {
+    const files: Record<string, string> = {}
+    const opened: string[] = []
+    const clock = setup(on, files, opened, [])
+    await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface, isInteractive: true } as never)
+    await clock.settle()
+    const call = $.tool.call as unknown as (input: Record<string, unknown>) => Promise<unknown>
+    for (let i = 1; i <= 14; i += 1) await call({ tool: 'Read', tool_use_id: `r${i}`, file_path: `/Users/test/x/note${i}.md` })
+    await clock.settle()
+
+    const focused = { title: 'In this chat', isFocused: true, bodyColumns: 48, placement: 'dock' } as never
+    const hint = await $.ui.mount({ plugin: 'chat-inventory', surface, component: 'Pane', requestId: 'chat-inventory', props: paneProps })
+    const hintText = await hint.find({ type: 'Text', text: /focus: click/ })
+    expect(hintText, 'hint while unfocused').toBeDefined()
+    expect(hintText?.props.dimColor, 'dim').toBe(true)
+    expect(hintText?.props.wrap, 'one line').toBe('truncate-end')
+    await hint.unmount()
+    const held = await $.ui.mount({ plugin: 'chat-inventory', surface, component: 'Pane', requestId: 'chat-inventory', props: focused })
+    expect(await held.find({ text: /focus: click/ }), 'no hint while focused').toBeUndefined()
+    await held.unmount()
+
+    const ui = await $.ui.mount({ plugin: 'chat-inventory', surface, component: 'Pane', requestId: 'chat-inventory', props: paneProps })
+    expect(await ui.find({ text: /^1 to 10 of 15$/ }), 'at the top').toBeDefined()
+    await $.command.run({ command: 'inventory', args: 'down' } as never)
+    expect(await ui.find({ text: /^6 to 15 of 15$/ }), '/inventory down moves the window').toBeDefined()
+    await $.command.run({ command: 'inventory', args: 'up' } as never)
+    expect(await ui.find({ text: /^1 to 10 of 15$/ }), '/inventory up moves it back').toBeDefined()
+
+    await $.command.run({ command: 'inventory', args: 'hide' } as never)
+    expect(JSON.parse(files[SW] ?? '{}'), 'hide writes the flag').toEqual({ 'chat-inventory:hidden': true })
+    expect(opened, 'hide closes the pane').toContain('closed:chat-inventory')
   })
 }

@@ -21,9 +21,11 @@ const NO_PLAN = 'No to-do list yet. Claude makes one for jobs with 3 or more ste
 const PLAN_TOOL = 'mcp__helper-desk__plan'
 const PLAN_TOOLS = new Set([PLAN_TOOL, 'TodoWrite', 'TaskCreate', 'TaskUpdate'])
 
-const ACCENT = '#d97757'
-const INFO = '#2563eb'
-const GOOD = '#16a34a'
+// Functional color follows the person's theme; the badge SVG paints its own tile, so it keeps a fixed hex.
+const ACCENT = 'claude'
+const INFO = 'suggestion'
+const GOOD = 'success'
+const BADGE = '#d97757'
 
 const EMPTY: Inventory = { connectors: [], files: [], skills: [] }
 const inv = atom({ plugin: 'chat-inventory', key: 'inv' } as const, EMPTY)
@@ -572,14 +574,14 @@ function badgeSvg(key: string, name: string, count: number): string {
   const logo = LOGOS[key]
   const tile =
     logo?.svg ??
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32"><rect width="32" height="32" rx="8" fill="${ACCENT}"/><text x="16" y="21.5" text-anchor="middle" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#ffffff">${(name[0] ?? '?').toUpperCase()}</text></svg>`
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32"><rect width="32" height="32" rx="8" fill="${BADGE}"/><text x="16" y="21.5" text-anchor="middle" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#ffffff">${(name[0] ?? '?').toUpperCase()}</text></svg>`
   const inner = tile.replace('<svg ', '<svg x="1" y="7" ')
   const label = count > 99 ? '99+' : String(count)
   const w = label.length > 1 ? 9 + label.length * 4 : 15
   return (
     '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 44 40" width="44" height="40">' +
     inner +
-    `<rect x="${42 - w}" y="1" width="${w}" height="15" rx="7.5" fill="${ACCENT}" stroke="#ffffff" stroke-width="1.5"/>` +
+    `<rect x="${42 - w}" y="1" width="${w}" height="15" rx="7.5" fill="${BADGE}" stroke="#ffffff" stroke-width="1.5"/>` +
     `<text x="${42 - w / 2}" y="12" text-anchor="middle" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="10" font-weight="700" fill="#ffffff">${label}</text>` +
     '</svg>'
   )
@@ -621,8 +623,18 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('command.run', { command: 'inventory' }, async $ => {
+  on('command.run', { command: 'inventory' }, async ($, e) => {
     if (off) return { text: 'Chat Inventory is off. Turn it on with /mods.' }
+    // The pane's buttons as subcommands: /inventory hide, up, down.
+    const sub = e.args.trim().toLowerCase()
+    if (sub === 'hide') {
+      await setHidden($, true)
+      return { text: 'Chat Inventory hidden. Type /inventory or open /mods to show it.' }
+    }
+    if (sub === 'up' || sub === 'down') {
+      await moveFiles($, sub === 'up' ? -FILE_STEP : FILE_STEP)
+      return { text: `Moved the context files ${sub}.` }
+    }
     if (hidden) await setHidden($, false)
     await openPane($)
     void loadMemoryFiles($).catch(err => logError($, 'memory', err))
@@ -703,7 +715,7 @@ export const register: Register = on => {
     const { Box, Text, Button } = els
     const width = Math.max(20, e.props.bodyColumns)
     const inner = width - 4
-    if (await read($, offAtom)) return <Text dimColor>{OFF_LINE}</Text>
+    if (await read($, offAtom)) return <Text dimColor wrap="truncate-end">{OFF_LINE}</Text>
     const list = await read($, inv)
     const open = await read($, openKey)
     const folded = await read($, foldedAtom)
@@ -714,12 +726,12 @@ export const register: Register = on => {
       <Box key="h" flexDirection="row" justifyContent="space-between" width={inner}>
         <Button key={`sec-${key}`} plain onPress={() => undefined}>
           <Text color={ACCENT}>{isOpen ? '▾ ' : '▸ '}</Text>
-          <Text bold>{title}</Text>
+          <Text weight="bold">{title}</Text>
         </Button>
-        {right ? <Text dimColor>{right}</Text> : null}
+        {right ? <Text dimColor wrap="truncate-end">{right}</Text> : null}
       </Box>
     )
-    const none = <Text dimColor>None used yet</Text>
+    const none = <Text dimColor wrap="truncate-end">None used yet</Text>
     const section = (key: string, title: string, right: string, body: unknown) => {
       const isOpen = !folded.includes(key)
       return (
@@ -740,7 +752,7 @@ export const register: Register = on => {
     const capped = <T,>(rows: T[], draw: (r: T) => unknown) => {
       const shown = rows.slice(0, MAX_ROWS)
       const more = rows.length - shown.length
-      return [...shown.map(draw), more > 0 ? <Text key="more" dimColor>{`+${more} more`}</Text> : null] as never
+      return [...shown.map(draw), more > 0 ? <Text key="more" dimColor wrap="truncate-end">{`+${more} more`}</Text> : null] as never
     }
 
     // Connectors: a grid of logos, then the open one's calls.
@@ -758,7 +770,7 @@ export const register: Register = on => {
                 {call.tool}
                 {call.summary ? <Text dimColor>{`  ${call.summary}`}</Text> : null}
               </Text>,
-              <Text dimColor>{`${call.cli ? 'CLI ' : ''}${clockTime(call.at)}`.trim() || ' '}</Text>,
+              <Text dimColor wrap="truncate-end">{`${call.cli ? 'CLI ' : ''}${clockTime(call.at)}`.trim() || ' '}</Text>,
             )
           })}
         </Box>
@@ -796,7 +808,7 @@ export const register: Register = on => {
               {`${open === c.key ? '▾' : '▸'} ${c.name}`}
               {c.cli && !c.mcp ? <Text dimColor> via CLI</Text> : c.cli ? <Text dimColor> MCP + CLI</Text> : null}
             </Button>,
-            <Text color={ACCENT}>{plural(c.count, 'call')}</Text>,
+            <Text color={ACCENT} wrap="truncate-end">{plural(c.count, 'call')}</Text>,
           )}
           {open === c.key ? callList(c) : null}
         </Box>
@@ -817,7 +829,7 @@ export const register: Register = on => {
               {name}
               <Text dimColor>{`  ${folder}`}</Text>
             </Text>,
-            f.auto ? <Text color={INFO}>auto</Text> : null,
+            f.auto ? <Text color={INFO} wrap="truncate-end">auto</Text> : null,
           )
     }
     // A fixed window of rows: a Box cannot scroll inside a pane, so Up and Down move it.
@@ -826,7 +838,7 @@ export const register: Register = on => {
     const atTop = top === 0
     const atEnd = top + FILE_WINDOW >= files.length
     const readCount = files.filter(f => !f.auto).length
-    const readLine = row('fread', <Text dimColor>Files read</Text>, <Text dimColor>{String(readCount)}</Text>)
+    const readLine = row('fread', <Text dimColor wrap="truncate-end">Files read</Text>, <Text dimColor wrap="truncate-end">{String(readCount)}</Text>)
     const fileBody = !files.length
       ? none
       : files.length <= FILE_WINDOW
@@ -877,7 +889,7 @@ export const register: Register = on => {
           </Box>
           <Box flexDirection="column" width={textCols} flexShrink={0}>
             {lines.map((line, j) => (
-              <Text key={`l${j}`} wrap="truncate-end" dimColor={done} strikethrough={done} bold={now}>
+              <Text key={`l${j}`} wrap="truncate-end" dimColor={done} strikethrough={done} weight={now ? 'bold' : undefined}>
                 {line}
               </Text>
             ))}
@@ -902,6 +914,11 @@ export const register: Register = on => {
         {section('connectors', 'Connectors', String(conns.length), connectorBody)}
         {section('files', 'Context files', String(files.length), fileBody)}
         {section('skills', 'Skills', String(skills.length), skillBody)}
+        {!e.props.isFocused && (
+          <Text key="focus-hint" dimColor wrap="truncate-end">
+            focus: click · /inventory hide|up|down
+          </Text>
+        )}
       </Box>
     )
   })
