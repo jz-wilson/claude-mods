@@ -196,21 +196,33 @@ async function openReplay($) {
   return true;
 }
 
+function goTo($, to) {
+  state.index = Math.max(0, Math.min(to, state.replay.length - 1));
+  $.ui.invalidate("ui.render");
+}
+
+function closeReplay($) {
+  state.isOpen = false;
+  if (!state.inBand) $.ui.close({ id: PANE_ID });
+  state.inBand = false;
+  $.ui.invalidate("ui.render");
+}
+
 // The replay view: one step at a time. Drawn in the Pane, or in the band
 // above the prompt when the surface can't place a pane.
 function replayView($, e, inBand) {
     const { Box, Text, Button } = $.ui.resolve(e);
-    const maxDiff = inBand ? Math.max(3, Math.min(MAX_DIFF_LINES, (e.maxRows || 20) - 7)) : MAX_DIFF_LINES;
+    const maxDiff = inBand ? Math.max(3, Math.min(MAX_DIFF_LINES, (e.props.maxRows || 20) - 7)) : MAX_DIFF_LINES;
     const total = state.replay.length;
     if (!total) return Text({ dimColor: true, children: "No edits to replay." });
     const k = Math.max(0, Math.min(state.index, total - 1));
     const step = state.replay[k];
-    const width = Math.max(40, (e.bodyColumns || 100) - 4);
+    const width = Math.max(8, (e.props.bodyColumns || 100) - 4);
     const { add, del } = countChanges(step.diff);
     const shown = step.diff.slice(0, maxDiff);
 
     const diffRows = shown.map((l, n) => {
-      const color = l.op === "+" ? "green" : l.op === "-" ? "red" : undefined;
+      const color = l.op === "+" ? "success" : l.op === "-" ? "error" : undefined;
       const line = `${l.op === "~" ? " " : l.op} ${l.t}`.slice(0, width);
       return Text({ key: `d${n}`, color, dimColor: l.op === " " || l.op === "~", wrap: "truncate-end", children: line });
     });
@@ -219,36 +231,32 @@ function replayView($, e, inBand) {
 
     // The step list: one cell per step, the current one highlighted.
     const strip = state.replay.map((s, n) =>
-      Text({ key: `s${n}`, inverse: n === k, color: n === k ? "cyan" : undefined, dimColor: n !== k, children: ` ${n + 1} ` }));
+      Text({ key: `s${n}`, inverse: n === k, color: n === k ? "suggestion" : undefined, dimColor: n !== k, children: ` ${n + 1} ` }));
 
-    const go = (to) => { state.index = Math.max(0, Math.min(to, total - 1)); $.ui.invalidate("ui.render"); };
-    const close = () => {
-      state.isOpen = false;
-      if (!state.inBand) $.ui.close({ id: PANE_ID });
-      state.inBand = false;
-      $.ui.invalidate("ui.render");
-    };
+    const go = (to) => goTo($, to);
+    const close = () => closeReplay($);
 
     return Box({
-      flexDirection: "column", borderStyle: "round", borderColor: "magenta", paddingX: 1,
+      flexDirection: "column", borderStyle: "round", borderColor: "promptBorder", paddingX: 1,
       children: [
-        Box({ flexDirection: "row", justifyContent: "space-between", children: [
-          Text({ bold: true, color: "magenta", children: "▶ Replay Theater" }),
-          Text({ bold: true, children: `step ${k + 1} of ${total}` }),
+        Box({ flexDirection: "row", justifyContent: "space-between", gap: 1, children: [
+          Text({ weight: "bold", color: "claude", wrap: "truncate-end", children: "▶ Replay Theater" }),
+          Text({ weight: "bold", wrap: "truncate-end", children: `step ${k + 1} of ${total}` }),
         ] }),
-        Box({ flexDirection: "row", children: strip }),
-        Text({ bold: true, color: "cyan", wrap: "truncate-start", children: step.file }),
+        Box({ flexDirection: "row", flexWrap: "wrap", children: strip }),
+        Text({ weight: "bold", color: "suggestion", wrap: "truncate-start", children: step.file }),
         Box({ flexDirection: "row", gap: 2, children: [
-          Text({ dimColor: true, children: `${step.tool}${step.note ? " · " + step.note : ""}` }),
-          Text({ color: "green", children: `+${add}` }),
-          Text({ color: "red", children: `-${del}` }),
+          Box({ key: "meta", flexShrink: 1, children: Text({ dimColor: true, wrap: "truncate-end", children: `${step.tool}${step.note ? " · " + step.note : ""}` }) }),
+          Text({ color: "success", children: `+${add}` }),
+          Text({ color: "error", children: `-${del}` }),
         ] }),
         Box({ flexDirection: "column", marginTop: 1, children: diffRows }),
-        Box({ flexDirection: "row", gap: 2, marginTop: 1, children: [
+        Box({ flexDirection: "row", flexWrap: "wrap", gap: 2, marginTop: 1, children: [
           Button({ key: "prev", label: "◀ Prev", hotkey: "p", onPress: () => go(k - 1) }),
           Button({ key: "next", label: "Next ▶", hotkey: "n", autoFocus: true, onPress: () => go(k + 1) }),
           Button({ key: "close", label: "Close", hotkey: "c", onPress: close }),
         ] }),
+        ...(e.props.isFocused === false ? [Text({ key: "focus", dimColor: true, wrap: "truncate-end", children: "click to focus · /replay next, prev, close" })] : []),
       ],
     });
 }
@@ -259,7 +267,7 @@ export function register(on, options) {
     const r = await next(e);
     try {
       sw.sid = await $.session.id();
-      await $.command.register({ name: "replay", description: "Replay Theater: step through the last turn's file edits" });
+      await $.command.register({ name: "replay", description: "Replay Theater: step through the last turn's file edits. /replay next, prev or close drives the open view", argumentHint: "[next|prev|close]" });
       await poll($).catch(() => undefined);
       $.clock.every(POLL_MS, () => { void poll($).catch(() => undefined); });
     } catch { /* the mod still records */ }
@@ -268,6 +276,12 @@ export function register(on, options) {
 
   on("command.run", { command: "replay" }, async ($, e) => {
     if (sw.off) return { text: "Replay Theater is off. Turn it on with /mods." };
+    const arg = String(e.args ?? "").trim().toLowerCase();
+    if (state.isOpen && (arg === "next" || arg === "prev" || arg === "close")) {
+      if (arg === "close") closeReplay($);
+      else goTo($, state.index + (arg === "next" ? 1 : -1));
+      return { text: arg === "close" ? "Replay Theater closed." : `Replay Theater: step ${state.index + 1} of ${state.replay.length}` };
+    }
     if (sw.hidden) await setHidden($, false);
     const opened = await openReplay($);
     return { text: opened ? `Replay Theater: ${state.replay.length} edits` : "Replay Theater: no edits in the last turn." };
@@ -305,7 +319,7 @@ export function register(on, options) {
   // Local change (Ben AI, 2026-10-16): draw the other mods' bands first, so
   // this band sits under them instead of replacing them.
   on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
-    if (sw.off || sw.hidden) return next(e);
+    if (sw.off || sw.hidden || e.props.hasSurvey) return next(e);
     if (state.isOpen && state.inBand) return replayView($, e, true);
     if (!state.replay.length || state.isOpen) return next(e);
     const rest = await next(e);
@@ -313,7 +327,7 @@ export function register(on, options) {
     const band = Box({
       key: "replay-band", flexDirection: "row", gap: 2, paddingX: 1,
       children: [
-        Text({ color: "magenta", bold: true, children: hintText() }),
+        Box({ key: "hint", flexShrink: 1, children: Text({ color: "claude", weight: "bold", wrap: "truncate-end", children: hintText() }) }),
         Button({ key: "open-replay", label: "Replay", hotkey: "r", onPress: () => openReplay($) }),
       ],
     });
