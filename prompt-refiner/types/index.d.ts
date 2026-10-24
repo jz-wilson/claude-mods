@@ -8,6 +8,6 @@ export type Phase =
 
 declare module 'claude-code' {
   interface PluginState {
-    'prompt-refiner': { phase: Phase; isHidden: boolean }
+    'prompt-refiner': { phase: Phase; isHidden: boolean; isExpanded: boolean }
   }
 }

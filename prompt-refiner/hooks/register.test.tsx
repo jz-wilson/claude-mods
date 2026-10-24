@@ -311,3 +311,35 @@ test('every style reaches the model, and the system prompt lets it win', () => {
   expect(REFINE_SYSTEM).toContain('overrides every rule below')
   expect(REFINE_SYSTEM).not.toContain('Open with the task')
 })
+
+test('Show all expands a long rewrite, keeps the buttons on top, and Show less folds it', async ($, on) => {
+  const r = rig(on)
+  await start($)
+  const long = Array.from({ length: 30 }, (_, i) => `- step ${i + 1} of the plan`).join('\n')
+  r.replies = [`<prompt>\n${long}\n</prompt>\n<changes>\n- Split into steps\n</changes>`]
+  const ui = await $.ui.mount({ ...band(80, false, 12), surface: 'terminal' })
+  await ui.press({ key: 'refine' })
+  await ui.press({ key: 'clearer' })
+  expect(await textOf(ui, /step 30 of/), 'cut at first').toBeUndefined()
+  expect(await textOf(ui, /more lines/)).toBeDefined()
+  expect(await ui.find({ key: 'expand' })).toBeDefined()
+
+  await ui.press({ key: 'expand' })
+  expect(await textOf(ui, /step 30 of/)).toBe('- step 30 of the plan')
+  expect(await textOf(ui, /more lines/)).toBeUndefined()
+  expect(await textOf(ui, /Split into steps/)).toBe('+ Split into steps')
+  const order = (await ui.findAll({})).map(el => el.key ?? el.text ?? '')
+  expect(order.indexOf('use'), 'buttons before the body').toBeLessThan(order.findIndex(k => /step 1 of/.test(k)))
+
+  await ui.press({ key: 'expand' })
+  expect(await textOf(ui, /step 30 of/)).toBeUndefined()
+
+  // A short rewrite has nothing to expand.
+  r.replies = [REFINED_2]
+  await ui.press({ key: 'again' })
+  await ui.press({ key: 'shorter' })
+  expect(await ui.find({ key: 'expand' })).toBeUndefined()
+  await $.command.run({ command: 'refine', args: 'expand', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  expect(await ui.find({ key: 'expand' }), 'nothing to expand even after /refine expand').toBeUndefined()
+  await ui.unmount()
+})

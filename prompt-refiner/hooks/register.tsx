@@ -24,6 +24,7 @@ const GUIDES = ['More technical', 'Friendlier tone'] as const
 
 const phase = atom({ plugin: 'prompt-refiner', key: 'phase' } as const, { kind: 'idle' } as Phase)
 const isHidden = atom({ plugin: 'prompt-refiner', key: 'isHidden' } as const, false)
+const isExpanded = atom({ plugin: 'prompt-refiner', key: 'isExpanded' } as const, false)
 
 // The /mods switchboard turns this mod off in every chat with switches.json.
 let off = false
@@ -146,6 +147,8 @@ async function write($: EngineInterface, prompt: string) {
 async function pick($: EngineInterface, source: string, pass: number, back?: Refined) {
   if ((await read($, phase)).kind === 'working') return
   await update($, isHidden, () => false)
+  // Each new rewrite starts collapsed.
+  await update($, isExpanded, () => false)
   await setPhase($, { kind: 'picking', source, pass, back })
 }
 
@@ -238,8 +241,8 @@ export const register: Register = on => {
     const result = await next(e)
     await $.command.register({
       name: CMD,
-      description: 'Rewrite a prompt in a style you pick; show, hide, use or discard drive the band',
-      argumentHint: '[prompt | show | hide | use | discard]',
+      description: 'Rewrite a prompt in a style you pick; show, hide, expand, use or discard drive the band',
+      argumentHint: '[prompt | show | hide | expand | use | discard]',
     })
     // A reload mid-rewrite drops its awaits, so a stuck working phase starts over.
     if ((await read($, phase)).kind === 'working') await setPhase($, { kind: 'idle' })
@@ -262,6 +265,9 @@ export const register: Register = on => {
         return { text: 'Prompt Refiner hidden; /refine show brings it back.' }
       case 'use':
         return { text: await useIt($) }
+      case 'expand':
+        await update($, isExpanded, v => !v)
+        return { text: (await read($, isExpanded)) ? 'Showing the whole rewrite.' : 'Showing the short view.' }
       case 'discard':
         await setPhase($, { kind: 'idle' })
         return { text: 'Rewrite discarded.' }
@@ -321,7 +327,23 @@ export const register: Register = on => {
 
     const refined = now.refined
     const lines = wrapLines(refined.text, Math.max(10, e.props.bodyColumns - CHROME_COLUMNS))
-    const fit = layout(e.props.maxRows, lines.length, refined.changes.length)
+    // Expanded shows every line; a band taller than maxRows scrolls in the engine's window,
+    // so the buttons move to the top where they stay in reach.
+    const collapsed = layout(e.props.maxRows, lines.length, refined.changes.length)
+    // Only a rewrite that is cut has anything to expand.
+    const canExpand = collapsed.more > 0
+    const expanded = canExpand && (await read($, isExpanded))
+    const fit = expanded ? { body: lines.length, more: 0, changes: refined.changes.length } : collapsed
+    const actions = (
+      <Box flexDirection="row" flexWrap="wrap" gap={1}>
+        <Button key="use" label="Use it" variant="primary" onPress={() => useIt($)} />
+        <Button key="again" label="Refine" onPress={() => pick($, refined.text, refined.pass + 1, refined)} />
+        {canExpand ? (
+          <Button key="expand" label={expanded ? 'Show less' : `Show all ${lines.length} lines`} onPress={() => update($, isExpanded, v => !v)} />
+        ) : null}
+        <Button key="discard" label="Discard" dimColor onPress={() => setPhase($, { kind: 'idle' })} />
+      </Box>
+    )
 
     return (
       <Box
@@ -340,6 +362,7 @@ export const register: Register = on => {
           </Box>
           <Text color="subtle">pass {refined.pass}</Text>
         </Box>
+        {expanded ? actions : null}
         {lines.slice(0, fit.body).map(line => (
           <Text color="text" wrap="truncate-end">
             {line || ' '}
@@ -347,7 +370,7 @@ export const register: Register = on => {
         ))}
         {fit.more > 0 ? (
           <Text color="subtle" wrap="truncate-end">
-            +{fit.more} more lines; Use it to see the whole prompt
+            +{fit.more} more lines
           </Text>
         ) : null}
         {refined.changes.slice(0, fit.changes).map(change => (
@@ -355,11 +378,7 @@ export const register: Register = on => {
             + {change}
           </Text>
         ))}
-        <Box flexDirection="row" flexWrap="wrap" gap={1}>
-          <Button key="use" label="Use it" variant="primary" onPress={() => useIt($)} />
-          <Button key="again" label="Refine" onPress={() => pick($, refined.text, refined.pass + 1, refined)} />
-          <Button key="discard" label="Discard" dimColor onPress={() => setPhase($, { kind: 'idle' })} />
-        </Box>
+        {expanded ? null : actions}
       </Box>
     )
   })
