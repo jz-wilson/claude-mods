@@ -1442,7 +1442,8 @@ function expectedCells(parts: { sprite: { px: Map<string, string>; colors: Recor
   return out
 }
 
-test('the sprite boxes are exactly what the art touches', () => {
+// Pure pixel work that runs past the default 5 s on Windows CI runners.
+test('the sprite boxes are exactly what the art touches', { timeoutMs: 20000 }, () => {
   type B = { x0: number; y0: number; x1: number; y1: number }
   const grow = (b: B, px: Map<string, string>, ox = 0) => {
     for (const k of px.keys()) {
