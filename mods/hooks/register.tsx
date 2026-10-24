@@ -25,7 +25,7 @@ const MODS: readonly Mod[] = [
   { name: 'cache-clock', title: 'Cache Clock', what: 'Counts down until the cache goes cold', pane: false, hide: true, ask: false, tip: '/cacheclock to show or hide' },
   { name: 'handoff', title: 'Handoff (Refresh)', what: 'Moves a long chat to a fresh one', pane: false, hide: true, ask: true, tip: '/refresh to show it' },
   { name: 'screen-share', title: 'Screen-Share Mode', what: 'Hides emails, phones and amounts on screen', pane: false, hide: false, ask: false, tip: '/screen-share to hide private data' },
-  { name: 'brain-dump', title: 'Brain-Dump Shaper', what: 'Turns long rambling prompts into clear briefs', pane: false, hide: false, ask: false, tip: '' },
+  { name: 'prompt-refiner', title: 'Prompt Refiner', what: 'Rewrites the prompt in the box in a style you pick', pane: false, hide: false, ask: false, tip: '/refine <prompt>, or the Refine button' },
   { name: 'reflect', title: 'Reflect', what: 'Saves your corrections as lasting rules', pane: false, hide: false, ask: false, tip: '' },
   { name: 'helper-desk', title: 'Helper Desk', what: 'Task list above the prompt, plus a card per subagent', pane: true, hide: true, ask: true, tip: '/helpers to open' },
   { name: 'chat-inventory', title: 'Chat Inventory', what: 'Connectors, files and skills this chat used', pane: true, hide: true, ask: true, tip: '/inventory to open' },

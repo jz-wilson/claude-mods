@@ -5,7 +5,7 @@ import type { ThemeKey } from 'claude-code'
 const props = { title: 'Mods', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 40 }, view: {} } as never
 
 // installed_plugins.json: every known mod installed for this user, so each keeps its row.
-const KNOWN = ['cache-clock', 'handoff', 'screen-share', 'brain-dump', 'reflect', 'helper-desk', 'chat-inventory', 'cache-bar']
+const KNOWN = ['cache-clock', 'handoff', 'screen-share', 'prompt-refiner', 'reflect', 'helper-desk', 'chat-inventory', 'cache-bar']
 const installedJson = (names: string[], extra: Record<string, unknown[]> = {}) =>
   JSON.stringify({
     version: 2,
@@ -58,7 +58,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await v.find({ text: /Off means off in every chat\. Hidden keeps it on but out of sight\. Changes apply within 3 seconds\./ }), 'footer').toBeDefined()
     expect(await v.find({ text: 'New mods appear here by themselves.' }), 'footer line on new mods').toBeDefined()
     expect(await v.find({ text: 'Helper Desk' }), 'Helper Desk keeps its name').toBeDefined()
-    expect(await v.find({ key: 'show-brain-dump' }), 'no Shown/Hidden on brain-dump').toBeUndefined()
+    expect(await v.find({ key: 'show-prompt-refiner' }), 'no Shown/Hidden on prompt-refiner').toBeUndefined()
     expect(await v.find({ text: '/cacheclock to show or hide' }), 'tip under Cache Clock').toBeDefined()
     expect(await v.find({ text: '/screen-share to hide private data' }), 'tip under Screen-Share').toBeDefined()
 
@@ -314,7 +314,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await v.find({ text: 'long text' }), 'and its known description').toBeUndefined()
     expect(await v.find({ key: 'open-helper-desk' }), 'and its Open button').toBeDefined()
     expect(await v.find({ key: 'show-cache-clock' }), 'Cache Clock keeps Shown/Hidden').toBeDefined()
-    expect(await v.find({ key: 'toggle-brain-dump' }), 'Brain-Dump keeps On/Off').toBeDefined()
+    expect(await v.find({ key: 'toggle-prompt-refiner' }), 'Prompt Refiner keeps On/Off').toBeDefined()
     expect(await v.find({ key: 'show-zeta-notes' }), 'a new mod has no Shown/Hidden').toBeUndefined()
 
     // Installed means installed_plugins.json: not the leftover cache, not another folder's project install.
@@ -323,7 +323,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
 
     // Order: the old table (less reflect, not installed), new ones A to Z, this chat's own, then not installed.
     const order = (await v.findAll({ type: 'Box' })).map(b => b.key ?? '').filter(k => k.startsWith('row-')).map(k => k.slice(4))
-    expect(order.slice(0, 7), 'old table first').toEqual(['cache-clock', 'handoff', 'screen-share', 'brain-dump', 'helper-desk', 'chat-inventory', 'cache-bar'])
+    expect(order.slice(0, 7), 'old table first').toEqual(['cache-clock', 'handoff', 'screen-share', 'prompt-refiner', 'helper-desk', 'chat-inventory', 'cache-bar'])
     expect(order.slice(7), 'then A to Z, this chat only, then available').toEqual(['alpha-env', 'here-only', 'plain-tool', 'replay-theater', 'zeta-notes', 'brand-new', 'fresh-mod'])
 
     // A marketplace mod not installed: Install, no switches; pressing it runs the install.

@@ -3,7 +3,7 @@
   "owner": { "name": "jz-wilson" },
   "description": "Mods for Claude Code",
   "plugins": [
-    { "name": "brain-dump", "source": "./brain-dump" },
+    { "name": "prompt-refiner", "source": "./prompt-refiner" },
     { "name": "cache-bar", "source": "./cache-bar" },
     { "name": "cache-clock", "source": "./cache-clock" },
     { "name": "chat-inventory", "source": "./chat-inventory" },

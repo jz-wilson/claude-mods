@@ -6,7 +6,6 @@ Mods for Claude Code.
 |---|---|
 | [cache-bar](cache-bar) | Status-line bar under your existing status line showing how long the prompt cache stays warm, with a handoff countdown: `cache ▰▰▰▱▱▱▱▱ 23m 182k · handoff in 18m`. Turns yellow at a quarter of the TTL, red at the handoff threshold, and follows the drop to a 5-minute TTL. `/cache-bar:setup` installs it. |
 | [filetree](filetree) | Fork of [data-goblin/claude-code-filetree](https://github.com/data-goblin/claude-code-filetree) that shows only the files Claude touched this session; the header's `◆` button toggles to the whole tree. |
-| [brain-dump](brain-dump) | Catches a long, loose prompt before it is sent, asks up to 3 questions on gaps or clashes, then fills the prompt box with a four-part prompt (the job, the why, the guardrails, done means). |
 | [helper-desk](helper-desk) | Task list above the prompt that follows Claude's to-do list, plus a side pane with one live card per subagent. |
 | [helpin-per](helpin-per) | Pane listing open Helpin PER-* tasks; pick one to have Claude start working on it. |
 | [cache-clock](cache-clock) | Countdown above the prompt until the chat's cache goes cold, with a Keep warm button. |
@@ -17,8 +16,9 @@ Mods for Claude Code.
 | [replay-theater](replay-theater) | `/replay` steps through the file edits Claude made in the last turn, one diff at a time. |
 | [mods](mods) | `/mods` opens a pane to turn each mod on or off, including mods installed from other marketplaces, and to install mods a marketplace offers that are not installed yet. |
 | [effort-optimizer](effort-optimizer) | Before Claude starts on a prompt, a quick Sonnet check picks the effort level it needs (Low to Max) and offers a one-click switch, or sets it by itself with `/effort-optimizer auto`. |
+| [prompt-refiner](prompt-refiner) | A Refine button above the prompt, any time in the chat. Press it and pick a rewrite style for the prompt in the box, like a phone keyboard's suggestions: Clearer, Shorter, Elaborate, Brief (the job, the why, the guardrails, done means), Ask me first (up to 3 questions on gaps), or My guidance. The rewrite shows above the prompt with what changed; Use it fills the box, Refine runs another pass. `/refine <prompt>` does the same. |
 
-The nine mods other than replay-theater, from brain-dump to effort-optimizer, come from Ben AI's benai-mods ([benai.co](https://www.benai.co)) and are redistributed with permission, with Windows fixes added here. replay-theater (one Ben AI change: `/mods` switch support) is Anthropic's sample mod from [anthropics/claude-code-playground](https://github.com/anthropics/claude-code-playground/tree/main/claude-code/mods/replay-theater), under the Apache 2.0 license in its `LICENSE`.
+The eight mods other than replay-theater, from helper-desk to effort-optimizer, come from Ben AI's benai-mods ([benai.co](https://www.benai.co)) and are redistributed with permission, with Windows fixes added here. replay-theater (one Ben AI change: `/mods` switch support) is Anthropic's sample mod from [anthropics/claude-code-playground](https://github.com/anthropics/claude-code-playground/tree/main/claude-code/mods/replay-theater), under the Apache 2.0 license in its `LICENSE`.
 
 ### Reflect setting
 
