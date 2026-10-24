@@ -363,6 +363,17 @@ test('every style reaches the model, and the system prompt lets it win', () => {
   expect(REFINE_SYSTEM).not.toContain('Open with the task')
 })
 
+test('Structured owns the four sections; Elaborate and Clearer keep the draft shape', () => {
+  const how = (key: string) => STYLES.find(s => s.key === key)?.how ?? ''
+  expect(STYLES.map(s => s.label)).toContain('Structured')
+  expect(STYLES.map(s => s.label)).not.toContain('Brief')
+  for (const heading of ['THE JOB', 'THE WHY', 'THE GUARDRAILS', 'DONE MEANS']) expect(how('structured')).toContain(heading)
+  expect(how('elaborate')).toContain('No headings')
+  expect(how('elaborate')).not.toContain('add sections')
+  expect(how('clearer')).toContain('at most a third longer')
+  expect(how('clearer')).toContain('Add no steps')
+})
+
 test('Show all expands a long rewrite, keeps the buttons on top, and Show less folds it', async ($, on) => {
   const r = rig(on)
   await start($)
