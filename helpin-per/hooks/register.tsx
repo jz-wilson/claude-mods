@@ -7,9 +7,6 @@ const PANE = 'helpin-per'
 const TITLE = 'Helpin PER'
 const SERVER = 'helpin'
 const PREFIX = 'PER-'
-const REFRESH_MS = 2 * 60 * 1000
-const WARMUP_MS = 5 * 1000
-const WARMUP_TRIES = 12
 const PRIORITY_RANK: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3, none: 4 }
 
 const ACCENT = '#06b6d4'
@@ -39,12 +36,11 @@ type RawTask = {
 }
 
 let inflight: Promise<boolean> | undefined
-// Set by any non-quiet caller, so a press of `r` that joins a quiet warmup
-// fetch still gets its failure shown.
-let showError = false
 
-function refresh($: EngineInterface, quiet = false): Promise<boolean> {
-  if (!quiet) showError = true
+// Tasks load only when the person presses the pane's load button, never on a
+// timer, a turn or session start: a plugin's MCP call fires PreToolUse and
+// PostToolUse hooks, and Orca reads those as Claude working until the next Stop.
+function refresh($: EngineInterface): Promise<boolean> {
   inflight ??= fetchTasks($)
     .catch(error => {
       $.ui.toast(`Helpin PER refresh failed: ${error instanceof Error ? error.message : String(error)}`)
@@ -52,16 +48,8 @@ function refresh($: EngineInterface, quiet = false): Promise<boolean> {
     })
     .finally(() => {
       inflight = undefined
-      showError = false
     })
   return inflight
-}
-
-// The helpin MCP server is usually still connecting when session.start fires,
-// so retry quietly until the first fetch lands; only the last failure is shown.
-async function warmUp($: EngineInterface, attempt = 1): Promise<void> {
-  if (await refresh($, attempt < WARMUP_TRIES)) return
-  if (attempt < WARMUP_TRIES) $.clock.after(WARMUP_MS, () => void warmUp($, attempt + 1))
 }
 
 async function fetchTasks($: EngineInterface): Promise<boolean> {
@@ -96,7 +84,6 @@ async function fetchTasks($: EngineInterface): Promise<boolean> {
       offset = data.has_more && typeof next === 'number' && next > offset ? next : null
     }
   } catch (error) {
-    if (!showError) return false
     const message = error instanceof Error ? error.message : String(error)
     await update($, list, old => ({ ...old, error: message }))
     return false
@@ -129,8 +116,6 @@ export const register: Register = on => {
       name: 'per',
       description: 'Show open Helpin PER-* tasks in a pane and pick one to work on',
     })
-    void warmUp($)
-    $.clock.every(REFRESH_MS, () => void refresh($))
     try {
       const opened = await $.ui.open({ id: PANE, title: TITLE })
       if (!opened.isPlaced) $.ui.log(`Helpin PER pane waiting: ${opened.reason}`)
@@ -143,7 +128,6 @@ export const register: Register = on => {
 
   on('command.run', { command: 'per' }, async $ => {
     await $.ui.open({ id: PANE, title: TITLE })
-    void refresh($)
 
     return { text: 'Helpin PER pane opened.' }
   })
@@ -167,7 +151,7 @@ export const register: Register = on => {
             </Text>
           </Text>
           <Button key="refresh" plain hotkey="r" onPress={() => refresh($)}>
-            refresh
+            {fetchedAt ? 'refresh' : 'load'}
           </Button>
         </Box>
         {error && (
@@ -176,7 +160,9 @@ export const register: Register = on => {
           </Text>
         )}
         {tasks.length === 0 && !error && (
-          <Text dimColor>{fetchedAt ? 'No open PER tasks.' : 'Loading…'}</Text>
+          <Text dimColor>
+            {fetchedAt ? 'No open PER tasks.' : 'Press load (r) to fetch tasks.'}
+          </Text>
         )}
         {tasks.length > 0 && (
           <Box flexDirection="column">

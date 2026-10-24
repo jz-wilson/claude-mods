@@ -68,7 +68,7 @@ test('pressing a task queues a prompt naming it', async ($, on) => {
   await ui.unmount()
 })
 
-test('session start opens the pane and retries until helpin connects', async ($, on) => {
+test('helpin is called only when the load button is pressed', async ($, on) => {
   const clock = mock.clock(on)
   const opened: string[] = []
   let calls = 0
@@ -79,28 +79,30 @@ test('session start opens the pane and retries until helpin connects', async ($,
   })
   on('ui.toast', () => ({ value: undefined }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
   on('mcp.call', () => {
     calls++
     const data = {
       tasks: [{ task_key: 'PER-7', task_id: 't7', name: 'Seven', state_name: 'To Do', priority: 'low' }],
       has_more: false,
     }
-    const isError = calls < 3
-    const text = isError ? 'not connected' : JSON.stringify({ data })
-    return { value: { isError, content: [{ type: 'text' as const, text }] } }
+    return { value: { isError: false, content: [{ type: 'text' as const, text: JSON.stringify({ data }) }] } }
   })
 
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
-  await clock.settle()
-  expect(opened).toEqual(['helpin-per'])
+  await $.turn.start({ text: 'go', turnId: 'main' })
+  await $.command.run({ command: 'per', args: '' } as never)
+  await clock.advance(10 * 60_000)
+  expect(opened).toEqual(['helpin-per', 'helpin-per'])
+  expect(calls).toBe(0)
 
   const before = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect(await before.find({ type: 'Text', text: /not connected/ })).toBeFalsy()
-  expect(await before.find({ type: 'Text', text: /Loading/ })).toBeTruthy()
+  expect(await before.find({ type: 'Text', text: /Press load/ })).toBeTruthy()
+  await before.press({ key: 'refresh' })
+  await clock.settle()
+  expect(calls).toBe(1)
   await before.unmount()
 
-  await clock.advance(10_000)
-  expect(calls).toBe(3)
   const after = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await after.find({ type: 'Button', key: 'PER-7' })).toBeTruthy()
   await after.unmount()
