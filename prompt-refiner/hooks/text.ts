@@ -92,17 +92,17 @@ export const STYLES = [
   {
     key: 'clearer',
     label: 'Clearer',
-    how: 'Open with the task in one plain sentence, then make the rest clearer and more specific. About the same length; plain prose and short bullets.',
+    how: 'Open with the task in one plain sentence, then make the rest clearer and more specific. Keep it close to the draft\'s length, at most a third longer. Add no steps, checks or requirements the draft does not ask for. Plain prose and short bullets.',
   },
   { key: 'shorter', label: 'Shorter', how: 'Cut it to the fewest words that keep every fact and instruction. It must come out shorter than the draft.' },
   {
     key: 'elaborate',
     label: 'Elaborate',
-    how: 'Make it longer and fuller. Open with the task in one sentence, then add sections for the goal, the context, the constraints and what done looks like, filled from what the draft states or plainly implies. For anything it does not say, add a line asking the assistant to check or ask me.',
+    how: 'Improve it by making it fuller: turn vague parts into concrete asks, spell out the steps and details the draft implies, and where it leaves something important unsaid, add a line asking the assistant to check or ask me. Keep the draft\'s own shape and flow. No headings and no goal, constraints or done-criteria sections; that is a different style.',
   },
   {
-    key: 'brief',
-    label: 'Brief',
+    key: 'structured',
+    label: 'Structured',
     how: 'Start with the line THE JOB and write it as four parts under these exact headings, each on its own line: THE JOB, THE WHY, THE GUARDRAILS, DONE MEANS. Nothing before THE JOB. Where it says nothing for a part, write "unknown: ask me".',
   },
   { key: 'ask', label: 'Ask me first', how: 'Open with the task in one plain sentence, then make it clearer and more specific using my answers.' },

@@ -110,6 +110,28 @@ function rig(on: On): Rig {
 
 const start = ($: Dollar) => $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
 
+function hint(isWorking = false) {
+  return { plugin: PLUGIN, component: 'PromptHint', requestId: 'hint', props: { isDraft: true, isWorking, hint: '? for shortcuts' } } as const
+}
+
+// The hint line under the box and the band above it, mounted together: a find
+// or a press goes to whichever one draws the element.
+async function both($: Dollar, site: ReturnType<typeof band>, surface: (typeof SURFACES)[number]) {
+  const above = await $.ui.mount({ ...site, surface })
+  const below = await $.ui.mount({ ...hint(), surface })
+  return {
+    above,
+    below,
+    find: async (q: object) => (await above.find(q)) ?? (await below.find(q)),
+    findAll: async (q: object) => [...(await above.findAll(q)), ...(await below.findAll(q))],
+    press: async (q: object) => ((await below.find(q)) ? below.press(q as never) : above.press(q as never)),
+    unmount: async () => {
+      await above.unmount()
+      await below.unmount()
+    },
+  }
+}
+
 const textOf = async (ui: { find: (q: object) => Promise<FoundElement | undefined> }, text: RegExp) => (await ui.find({ type: 'Text', text }))?.text
 
 test('the Refine button stays through the chat and the chips fit every width', async ($, on) => {
@@ -118,7 +140,7 @@ test('the Refine button stays through the chat and the chips fit every width', a
   await $.turn.start({ turnId: 't1', text: 'go' })
   for (const surface of SURFACES) {
     for (const width of WIDTHS) {
-      const ui = await $.ui.mount({ ...band(width), surface })
+      const ui = await both($, band(width), surface)
       expect(await ui.find({ key: 'refine' }), `Refine at ${width} on ${surface}`).toBeDefined()
       expect(rawColors(await ui.findAll({}))).toEqual([])
       await ui.press({ key: 'refine' })
@@ -137,7 +159,7 @@ test('nothing runs until a style is picked, then Use it fills the box', async ($
   for (const surface of SURFACES) {
     r.replies = [REFINED]
     r.prompts.length = 0
-    const ui = await $.ui.mount({ ...band(80), surface })
+    const ui = await both($, band(80), surface)
     await ui.press({ key: 'refine' })
     expect(r.prompts.length, 'Refine alone calls no model').toBe(0)
     await ui.press({ key: 'clearer' })
@@ -160,7 +182,7 @@ test('Ask me first asks the gaps; My guidance sends the guidance', async ($, on)
   r.replies = [GAPS, REFINED]
   r.answers = { [QUESTION]: 'auth.test.ts', [GUIDE_Q]: 'mention the CI runner' }
   await start($)
-  const ui = await $.ui.mount({ ...band(80), surface: 'terminal' })
+  const ui = await both($, band(80), 'terminal')
   await ui.press({ key: 'refine' })
   await ui.press({ key: 'ask' })
   expect(r.asks.at(-1)?.header).toBe('Refine 1/1')
@@ -192,12 +214,12 @@ test('the rewrite band fits every width and a short band', async ($, on) => {
   for (const surface of SURFACES) {
     for (const width of WIDTHS) {
       r.replies = [REFINED]
-      const ui = await $.ui.mount({ ...band(width, false, 8), surface })
+      const ui = await both($, band(width, false, 8), surface)
       await ui.press({ key: 'refine' })
-      await ui.press({ key: 'brief' })
+      await ui.press({ key: 'structured' })
       for (const key of ['use', 'again', 'discard']) expect(await ui.find({ key }), `${key} at ${width}`).toBeDefined()
       // Two Texts share the header row; border (2) and the button row (2, wrapped) take the rest of maxRows.
-      expect((await ui.findAll({ type: 'Text' })).length - 1).toBeLessThanOrEqual(8 - 4)
+      expect((await ui.above.findAll({ type: 'Text' })).length - 1).toBeLessThanOrEqual(8 - 4)
       expect(rawColors(await ui.findAll({}))).toEqual([])
       await ui.press({ key: 'discard' })
       await ui.unmount()
@@ -209,7 +231,7 @@ test('an empty box asks for the idea; a failed call keeps the chips and says why
   const r = rig(on)
   r.draft = '   '
   await start($)
-  const ui = await $.ui.mount({ ...band(80), surface: 'terminal' })
+  const ui = await both($, band(80), 'terminal')
   await ui.press({ key: 'refine' })
   expect(r.asks.at(-1)?.q).toBe(IDEA_Q)
   expect(await ui.find({ key: 'refine' }), 'dismissed: nothing happens').toBeDefined()
@@ -231,19 +253,48 @@ test('the band yields to a survey and to Hide, and /refine show brings it back',
   expect(await textOf(survey, /engine/)).toBe('engine')
   await survey.unmount()
 
-  const ui = await $.ui.mount({ ...band(80), surface: 'terminal' })
+  const ui = await both($, band(80), 'terminal')
   await ui.press({ key: 'hide' })
-  expect(await textOf(ui, /engine/)).toBe('engine')
+  expect(await textOf(ui.below, /engine/)).toBe('engine')
   await $.command.run({ command: 'refine', args: 'show', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
-  expect(await ui.find({ key: 'refine' })).toBeDefined()
+  expect(await ui.below.find({ key: 'refine' })).toBeDefined()
   await ui.unmount()
+
+  // A survey over the chips still wins the band.
+  const picking = await both($, band(80), 'terminal')
+  await picking.press({ key: 'refine' })
+  await picking.above.unmount()
+  const surveyed = await $.ui.mount({ ...band(80, true), surface: 'terminal' })
+  expect(await textOf(surveyed, /engine/)).toBe('engine')
+  await surveyed.unmount()
+  await picking.below.unmount()
+})
+
+test('Refine sits under the box: the idle band stays empty and a turn keeps the engine hint', async ($, on) => {
+  rig(on)
+  await start($)
+  for (const surface of SURFACES) {
+    const ui = await both($, band(80), surface)
+    expect(await ui.above.find({ key: 'refine' }), 'no button above the box').toBeUndefined()
+    expect(await textOf(ui.above, /engine/)).toBe('engine')
+    expect(await ui.below.find({ key: 'refine' }), 'button under the box').toBeDefined()
+    expect(await textOf(ui.below, /for shortcuts/)).toBe('? for shortcuts')
+    expect(rawColors(await ui.below.findAll({}))).toEqual([])
+    await ui.press({ key: 'refine' })
+    expect(await ui.below.find({ key: 'refine' }), 'hint line goes back to the engine while the chips show').toBeUndefined()
+    await ui.press({ key: 'cancel' })
+    await ui.unmount()
+    const working = await $.ui.mount({ ...hint(true), surface })
+    expect(await textOf(working, /engine/), 'engine line during a turn').toBe('engine')
+    await working.unmount()
+  }
 })
 
 test('/refine <text> offers the chips, and /refine use fills the box', async ($, on) => {
   const r = rig(on)
   r.replies = [REFINED]
   await start($)
-  const ui = await $.ui.mount({ ...band(80), surface: 'terminal' })
+  const ui = await both($, band(80), 'terminal')
   const run = (args: string) => $.command.run({ command: 'refine', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
   await run(DRAFT)
   expect(await ui.find({ key: 'elaborate' })).toBeDefined()
@@ -256,11 +307,11 @@ test('/refine <text> offers the chips, and /refine use fills the box', async ($,
 test('a double press runs one rewrite, and Cancel drops the late result', async ($, on) => {
   const r = rig(on)
   await start($)
-  const ui = await $.ui.mount({ ...band(80), surface: 'terminal' })
+  const ui = await both($, band(80), 'terminal')
 
   r.replies = [REFINED]
   await ui.press({ key: 'refine' })
-  await Promise.all([ui.press({ key: 'clearer' }), ui.press({ key: 'clearer' })])
+  await Promise.all([ui.above.press({ key: 'clearer' }), ui.above.press({ key: 'clearer' })])
   expect(r.prompts.length, 'one write').toBe(1)
   await ui.press({ key: 'discard' })
 
@@ -291,7 +342,7 @@ test('parsers and layout', () => {
 test('Cancel during a second pass returns to the first rewrite', async ($, on) => {
   const r = rig(on)
   await start($)
-  const ui = await $.ui.mount({ ...band(80), surface: 'terminal' })
+  const ui = await both($, band(80), 'terminal')
   r.replies = [REFINED]
   await ui.press({ key: 'refine' })
   await ui.press({ key: 'clearer' })
@@ -317,7 +368,7 @@ test('Show all expands a long rewrite, keeps the buttons on top, and Show less f
   await start($)
   const long = Array.from({ length: 30 }, (_, i) => `- step ${i + 1} of the plan`).join('\n')
   r.replies = [`<prompt>\n${long}\n</prompt>\n<changes>\n- Split into steps\n</changes>`]
-  const ui = await $.ui.mount({ ...band(80, false, 12), surface: 'terminal' })
+  const ui = await both($, band(80, false, 12), 'terminal')
   await ui.press({ key: 'refine' })
   await ui.press({ key: 'clearer' })
   expect(await textOf(ui, /step 30 of/), 'cut at first').toBeUndefined()

@@ -5,8 +5,8 @@ import type { Phase, Refined } from '../types'
 import { GAPS_SYSTEM, REFINE_SYSTEM, STYLES, layout, parseGaps, parseRefined, refinePrompt, wrapLines } from './text'
 import type { Gap, QA, StyleKey } from './text'
 
-// A Refine button sits above the prompt for the whole chat. Pressed, it offers
-// rewrite styles as chips, the way a phone keyboard offers Professional or
+// A Refine button sits in the hint line under the prompt for the whole chat.
+// Pressed, it offers rewrite styles as chips in the band above the box, the way a phone keyboard offers Professional or
 // Elaborate, for the prompt in the box (or an idea it asks for when the box
 // is empty). The rewrite shows in the band with what changed: Use it fills
 // the box, Refine offers the chips again on the rewrite, Discard drops it.
@@ -272,33 +272,37 @@ export const register: Register = on => {
         await setPhase($, { kind: 'idle' })
         return { text: 'Rewrite discarded.' }
       case '':
-        return { text: 'Press Refine above the prompt, or /refine <prompt> to pick a style for it.' }
+        return { text: 'Press Refine under the prompt, or /refine <prompt> to pick a style for it.' }
       default:
         await pick($, arg, 1)
         return { text: 'Pick a style above the prompt.' }
     }
   })
 
+  // The idle Refine button sits in the hint line under the prompt box. During a
+  // turn the engine's line ("esc to interrupt") keeps its place.
+  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
+    if (off || e.props.isWorking || (await read($, isHidden)) || (await read($, phase)).kind !== 'idle') return next(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
+    return (
+      <Box key="refine-hint" flexDirection="row" alignItems="center" gap={1}>
+        <Box flexShrink={1}>
+          <Text dimColor wrap="truncate-end">
+            {e.props.hint}
+          </Text>
+        </Box>
+        <Button key="refine" label="Refine" variant="primary" onPress={() => pickFromBox($)} />
+        <Button key="hide" label="Hide" dimColor onPress={() => update($, isHidden, () => true)} />
+      </Box>
+    )
+  })
+
+  // The chips, the progress and the rewrite open in the band above the box.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (off || e.props.hasSurvey || (await read($, isHidden))) return next(e)
     const now = await read($, phase)
+    if (now.kind === 'idle') return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
-
-    if (now.kind === 'idle') {
-      return (
-        <Box key="refine-idle" flexDirection="row" justifyContent="space-between" alignItems="center" gap={2} paddingX={1}>
-          <Box flexShrink={1}>
-            <Text color="subtle" wrap="truncate-end">
-              Rewrite the prompt in the box
-            </Text>
-          </Box>
-          <Box flexDirection="row" gap={1}>
-            <Button key="refine" label="Refine" variant="primary" onPress={() => pickFromBox($)} />
-            <Button key="hide" label="Hide" dimColor onPress={() => update($, isHidden, () => true)} />
-          </Box>
-        </Box>
-      )
-    }
 
     if (now.kind === 'picking') {
       return (
