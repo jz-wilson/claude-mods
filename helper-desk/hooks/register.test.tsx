@@ -181,6 +181,10 @@ for (const surface of ['desktop', 'terminal'] as const) {
     await clock.settle()
     expect(await v.find({ type: 'Text', text: /^Finished · 1\s*$/ }), 'Finished heading with its count').toBeDefined()
     expect((await v.find({ key: 'head-finished' }))?.props.backgroundColor, 'Finished sits in a yellow box').toBe('warning')
+    expect(await v.find({ type: 'Text', text: /^▸ $/ }), 'Finished starts folded').toBeDefined()
+    expect(await v.find({ text: /34k tokens/ }), 'folded: no finished card').toBeUndefined()
+    await v.press({ key: 'group-finished' })
+    await clock.settle()
     expect(await v.find({ text: /^Subagent tokens$/ }), 'subagent tokens tile from usage').toBeDefined()
     expect(await v.find({ text: /34k tokens/ }), 'card tokens').toBeDefined()
     expect(statuses[statuses.length - 1], 'still no footer status').toBeUndefined()
@@ -230,6 +234,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     // Finished: a static frame with no keyframes.
     await $.turn.complete({ answer: 'ok', agentId: 'agent-a1', reason: 'answer', durationMs: 1, isAborted: false, turnId: 't1' } as never)
     await clock.settle()
+    await v.press({ key: 'group-finished' })
+    await clock.settle()
     const done = String((await v.findAll({ type: 'Svg' })).find(p => String(p.props.alt).endsWith('red'))?.props.source)
     expect(done.includes('@keyframes'), 'a finished pet has no keyframes').toBe(false)
     const other = String((await v.findAll({ type: 'Svg' })).find(p => String(p.props.alt).endsWith('orange'))?.props.source)
@@ -254,6 +260,8 @@ for (const surface of ['desktop', 'terminal'] as const) {
     // One finishes, a third starts: it takes the next colour in order, never the running one's.
     await $.turn.complete({ answer: 'ok', agentId: 'agent-a1', reason: 'answer', durationMs: 1, isAborted: false, turnId: 't1' } as never)
     await $.agent.spawn({ tool_use_id: 's3', prompt: 'x', description: 'Three', subagentType: 'general-purpose' } as never)
+    await clock.settle()
+    await v.press({ key: 'group-finished' })
     await clock.settle()
     const all = await colours()
     expect(all, 'three pets').toHaveLength(3)
@@ -597,6 +605,7 @@ test('/helpers steps <n> counts cards in the order the pane lists them', { timeo
   expect(agents, 'two spawned').toHaveLength(2)
   const v = await $.ui.mount({ plugin: 'helper-desk', surface: 'terminal', component: 'Pane', requestId: 'helpers', props: props(80) })
   const run = (args: string) => $.command.run({ command: 'helpers', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } } as never)
+  await run('fold finished')
   await run('steps 1')
   expect((await v.find({ key: 'steps-agent-a2' }))?.text ?? '', 'card 1 is the running one').toContain('Hide steps')
   expect((await v.find({ key: 'steps-agent-a1' }))?.text ?? '', 'card 2 stays closed').toContain('All 1 step')
@@ -715,7 +724,7 @@ const jevCall = (id: string, phase: string, extra: Record<string, unknown> = {})
   phase,
   ...extra,
 })
-const jevFile = (calls: unknown[]) => JSON.stringify({ calls })
+const jevFile = (calls: unknown[], inputTokens?: number) => JSON.stringify({ calls, inputTokens })
 const judgedCall = jevCall('j1', 'judged', {
   tier: 'sonnet',
   effort: 'high',
@@ -730,7 +739,7 @@ test('Jev calls draw as one card at 40, 80 and 144 columns on both surfaces, wit
       jevCall('j2', 'asking'),
       jevCall('j3', 'judging', { tier: 'opus', effort: 'low', probs: { haiku: 0.2, sonnet: 0.3, opus: 0.5 } }),
       jevCall('j4', 'skipped', { skipReason: 'timeout' }),
-    ]),
+    ], 2400),
   }
   const { clock } = rig(on, files)
   await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface: 'terminal', isInteractive: true } as never)
@@ -739,6 +748,8 @@ test('Jev calls draw as one card at 40, 80 and 144 columns on both surfaces, wit
       const v = await $.ui.mount({ plugin: 'helper-desk', surface, component: 'Pane', requestId: 'helpers', props: props(width) })
       const where = `${surface} ${width}`
       expect(await v.findAll({ type: 'Text', text: /^ Jev $/ }), `${where}: one Jev badge for all calls`).toHaveLength(1)
+      // 2400 input tokens at $0.042 per million.
+      expect(await v.find({ type: 'Text', text: /4 decisions · \$0\.00010( ·|$)/ }), `${where}: the chat's Jev cost after the count`).toBeDefined()
       expect(await v.find({ type: 'Text', text: /^skipped/ }), `${where}: the latest call's status, labeled`).toBeDefined()
       expect(await v.find({ type: 'Text', text: /^Status$/ }), `${where}: labels`).toBeDefined()
       expect(await v.find({ type: 'Text', text: /^▸ 3 earlier decisions$/ }), `${where}: earlier ones folded`).toBeDefined()
@@ -747,7 +758,7 @@ test('Jev calls draw as one card at 40, 80 and 144 columns on both surfaces, wit
       await clock.settle()
       expect(await v.find({ type: 'Text', text: /^▾ 3 earlier decisions$/ }), `${where}: unfolded`).toBeDefined()
       expect(await v.find({ type: 'Text', text: /→ sonnet 74% · high$/ }), `${where}: the pick`).toBeDefined()
-      expect(await v.find({ type: 'Text', text: /^· model router · 4 decisions · working$/ }), `${where}: the count`).toBeDefined()
+      expect(await v.find({ type: 'Text', text: /^· model router · 4 decisions · \$0\.00010 · working$/ }), `${where}: the count`).toBeDefined()
       expect(await v.findAll({ type: 'Text', text: /^ {2}ran sonnet · medium/ }), `${where}: what ran`).toHaveLength(2)
       if (width >= 80) expect(await v.find({ type: 'Text', text: /·  judge sonnet · medium ✓$/ }), `${where}: the verdict`).toBeDefined()
 
@@ -1125,9 +1136,8 @@ test('/helpers goto and a chip open a folded group first', { timeoutMs: 30000 },
   expect((await v.find({ key: 'card-agent-a2' }))?.props.borderColor, 'and lit the card').toBe('claude')
   // A chip on a running card points at a finished helper whose group is folded.
   await $.turn.complete({ answer: 'ok', agentId: 'agent-a2', reason: 'answer', durationMs: 1, isAborted: false, turnId: 't1' } as never)
-  await run('fold finished')
   await clock.settle()
-  expect(await v.find({ key: 'card-agent-a2' }), 'finished group folded').toBeUndefined()
+  expect(await v.find({ key: 'card-agent-a2' }), 'the finished group starts folded').toBeUndefined()
   await v.press({ key: 'goto|agent-a1|to|agent-a2' })
   expect(await v.find({ key: 'card-agent-a2' }), 'the chip opened the finished group').toBeDefined()
 })
@@ -1212,6 +1222,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
       await $.turn.complete({ answer: 'ok', agentId: 'agent-a3', reason: 'answer', durationMs: 1, isAborted: false, turnId: 't1' } as never)
       await clock.settle()
       const v = await $.ui.mount({ plugin: 'helper-desk', surface, component: 'Pane', requestId: 'helpers', props: props(80) })
+      await v.press({ key: 'group-finished' })
+      await clock.settle()
       const svgs = (await v.findAll({ type: 'Svg' })).filter(p => String(p.props.alt).startsWith('Claude crab')).map(p => String(p.props.source))
       expect(svgs.filter(x => x.includes('@keyframes st')), 'no steam once it is done').toHaveLength(0)
       expect(svgs.filter(x => !x.includes('@keyframes')), 'the finished pet has no keyframes').toHaveLength(1)

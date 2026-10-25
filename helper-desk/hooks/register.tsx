@@ -16,6 +16,7 @@ const HIDDEN = { plugin: 'helper-desk', key: 'hidden' } as const
 const PLAN = { plugin: 'helper-desk', key: 'plan' } as const
 const SHIM = { plugin: 'helper-desk', key: 'shimmer' } as const
 const JEV = { plugin: 'helper-desk', key: 'jev' } as const
+const JEV_TOKENS = { plugin: 'helper-desk', key: 'jevTokens' } as const
 const FOCUS = { plugin: 'helper-desk', key: 'focus' } as const
 const MOTION = { plugin: 'helper-desk', key: 'motion' } as const
 
@@ -588,6 +589,8 @@ const dispatchEffort = new Map<string, Effort>()
 // Jev's calls as last read from its live file, and whether the poller still watches for changes.
 let jev: JevCall[] = []
 let jevRaw = ''
+// -1 so the first poll always writes, replacing a total kept in state from before a reload.
+let jevTokens = -1
 let jevLive = false
 let jevGraceUntil = 0
 let switcher: { cancel: () => void } | null = null
@@ -777,6 +780,8 @@ const JEV_PHASES: readonly string[] = ['asking', 'answered', 'skipped', 'judging
 
 // jev-lab judges about 90 s after a subagent stops; a call still open after this long is stale, not live.
 const JEV_STALE_MS = 10 * 60_000
+// TypeSafe bills Jev input tokens at $0.042 per million; output is free (typesafe.ai pricing, 2026-10-24).
+const JEV_USD_PER_TOKEN = 0.042 / 1_000_000
 const jevStale = (c: JevCall, now: number) => !jevFinal(c) && now - c.at > JEV_STALE_MS
 
 const str = (v: unknown) => (typeof v === 'string' ? v : undefined)
@@ -824,14 +829,24 @@ function parseJev(text: string): JevCall[] {
  */
 async function pollJev($: EngineInterface) {
   let calls = jev
+  let tokens = jevTokens
+  // A /clear changes the session id without a session.start, so the live file to read can move.
+  sessionId = await $.session.id().catch(() => sessionId)
   try {
-    calls = home && sessionId && (await $.fs.exists(jevPath())) ? parseJev(String(await $.fs.read(jevPath()))) : []
+    const text = home && sessionId && (await $.fs.exists(jevPath())) ? String(await $.fs.read(jevPath())) : ''
+    calls = text ? parseJev(text) : []
+    const billed = text ? (JSON.parse(text) as { inputTokens?: unknown }).inputTokens : 0
+    tokens = typeof billed === 'number' ? billed : 0
   } catch {
     // A torn read: keep the last good copy and the watch.
   }
   const now = await $.clock.now()
   // The mark rides in the drawn copy, so a call going stale redraws its card.
   const marked: JevCall[] = calls.map(({ stale: _old, ...c }) => (jevStale(c, now) ? { ...c, stale: true } : c))
+  if (tokens !== jevTokens) {
+    jevTokens = tokens
+    await $.state.set(JEV_TOKENS, tokens)
+  }
   const raw = JSON.stringify(marked)
   if (raw !== jevRaw) {
     jevRaw = raw
@@ -1152,7 +1167,7 @@ async function gotoHelper($: EngineInterface, id: string) {
   // A card in a folded group is not drawn: open the group first.
   const group = target.phase === 'working' ? 'running' : target.phase === 'done' ? 'finished' : 'stopped'
   const { value: view = { open: [], folded: [] } } = await $.state.get(VIEW)
-  if (view.folded.includes(group)) await $.state.set(VIEW, { ...view, folded: view.folded.filter(x => x !== group) })
+  if (isFolded(view, group)) await toggleIn($, 'folded', group)
   const now = await $.clock.now()
   focusTimer?.cancel()
   focusTimer = $.clock.after(FOCUS_MS, () => {
@@ -1446,6 +1461,9 @@ async function loadPlan($: EngineInterface) {
     await log($, `load plan: ${String(err)}`)
   }
 }
+
+/** Finished starts folded and the others open; a group listed in `view.folded` is flipped from that default. */
+const isFolded = (view: { folded: string[] }, id: string) => view.folded.includes(id) !== (id === 'finished')
 
 async function toggleIn($: EngineInterface, field: 'open' | 'folded', id: string) {
   const { value = { open: [], folded: [] } } = await $.state.get(VIEW)
@@ -1803,6 +1821,7 @@ export const register: Register = on => {
     const { value: list = [] } = await $.state.get(HELPERS)
     const { value: clk = { tick: 0, now: 0 } } = await $.state.get(CLOCK)
     const { value: calls = [] } = await $.state.get(JEV)
+    const { value: jevTok = 0 } = await $.state.get(JEV_TOKENS)
     const { value: focus = null } = await $.state.get(FOCUS)
     const { value: moves = true } = await $.state.get(MOTION)
     const now = await $.clock.now()
@@ -2019,7 +2038,7 @@ export const register: Register = on => {
     // arrow that folds the group.
     const group = (id: string, title: string, members: Helper[], fill: ThemeKey, ink: ThemeKey) => {
       if (!members.length) return null
-      const folded = view.folded.includes(id)
+      const folded = isFolded(view, id)
       const label = `${title} · ${members.length}`
       const room = Math.max(label.length, width - 6)
       return (
@@ -2146,6 +2165,9 @@ export const register: Register = on => {
         )
       })
       const more = earlier.length - shown.length
+      const usd = jevTok * JEV_USD_PER_TOKEN
+      // A call costs about a thousandth of a cent, so small totals keep two significant digits.
+      const jevCost = jevTok ? ` · $${usd < 0.01 ? usd.toPrecision(2) : usd.toFixed(2)}` : ''
       return (
         <Box key="jev" flexDirection="column" width={width} borderStyle="round" borderColor="suggestion" borderDimColor={!live} paddingX={1} marginBottom={1}>
           <Box key="jev-head" flexDirection="row" gap={1} width={jw}>
@@ -2153,7 +2175,7 @@ export const register: Register = on => {
               {' Jev '}
             </Text>
             <Text dimColor wrap="truncate-end">
-              {`· model router · ${all.length} decision${all.length === 1 ? '' : 's'}${live ? ' · working' : ''}`}
+              {`· model router · ${all.length} decision${all.length === 1 ? '' : 's'}${jevCost}${live ? ' · working' : ''}`}
             </Text>
           </Box>
           <Box key="jev-body" flexDirection={jevStacked ? 'column' : 'row'} width={jw} marginTop={1}>

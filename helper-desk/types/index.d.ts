@@ -88,6 +88,8 @@ declare module 'claude-code' {
       view: { open: string[]; folded: string[] }
       /** The chat's /cost total in US dollars, null where the host keeps none. */
       cost: { usd: number | null }
+      /** Jev input tokens billed in this chat, from jev-lab's live file. */
+      jevTokens: number
       /** True while switches.json turns the mod off. */
       off: boolean
       /** True while switches.json hides the band and the pane ("helper-desk:hidden"). */
