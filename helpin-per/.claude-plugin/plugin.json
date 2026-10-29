@@ -1,6 +1,6 @@
 {
   "name": "helpin-per",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pane listing open Helpin PER-* tasks; pick one to have Claude start working on it",
   "author": { "name": "jz-wilson" },
   "types": "./types/index.d.ts"
