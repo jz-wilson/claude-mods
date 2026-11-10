@@ -12,7 +12,9 @@ While a turn runs, Replay Theater records each file edit Claude makes (the Edit,
 ▶ Replay: 5 edits (press r)  [ Replay ]
 ```
 
-Open it, and a pane shows one edit at a time: the file, the tool, a count of added and removed lines, and a short diff in red and green. A strip of numbered cells shows every step, with the current one highlighted, and the header reads "step 2 of 5". Prev, Next and Close buttons move through the steps.
+Open it, and the pane leads with a summary, "3 edits in 1 file" and the lines added and removed, then lists the edits in order: the ones already viewed get a check, the current one is highlighted, and each row shows its own added and removed counts. Under "EDIT 2 OF 3" is that edit's file, tool and a short diff in red and green. Previous edit, Next edit and Close buttons move through them. A replay of more than six edits shows six at a time, keeping the current one in view.
+
+In the desktop app and other surfaces that draw vector graphics, that view is one SVG card with its own light and dark colors, and each diff fades in as you step (not when reduced motion is on). The terminal draws the same content as text. In a terminal too narrow for a pane, the replay is drawn in the band above the prompt with a strip of numbered cells in place of the list. The screenshots below show the earlier layout.
 
 Replay Theater only watches. It never blocks, changes or delays an edit.
 
