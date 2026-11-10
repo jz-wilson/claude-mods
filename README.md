@@ -13,12 +13,12 @@ Mods for Claude Code.
 | [reflect](reflect) | When you correct Claude, offers to save the fix as a lasting rule in `CLAUDE.md` or a rules folder. |
 | [chat-inventory](chat-inventory) | Side pane, In this chat, listing the to-do list, connectors and calls per connector, files and skills this chat used. |
 | [screen-share](screen-share) | `/screen-share` hides names, emails, phone numbers and money amounts on screen while you record. |
-| [replay-theater](replay-theater) | `/replay` steps through the file edits Claude made in the last turn, one diff at a time. |
+| [replay-theater](replay-theater) | `/replay` steps through the file edits Claude made in the last turn, one diff at a time, under a summary and a checked-off list of the edits; an SVG card off the terminal. |
 | [mods](mods) | `/mods` opens a pane to turn each mod on or off, including mods installed from other marketplaces, and to install mods a marketplace offers that are not installed yet. |
 | [effort-optimizer](effort-optimizer) | Before Claude starts on a prompt, a quick Sonnet check picks the effort level it needs (Low to Max) and offers a one-click switch, or sets it by itself with `/effort-optimizer auto`. |
 | [prompt-refiner](prompt-refiner) | A Refine button in the hint line under the prompt, any time in the chat. Press it and pick a rewrite style for the prompt in the box, like a phone keyboard's suggestions: Clearer, Shorter, Elaborate (fuller, same shape), Structured (the job, the why, the guardrails, done means), Ask me first (up to 3 questions on gaps), or My guidance. The rewrite shows above the prompt with what changed; Use it fills the box, Refine runs another pass. `/refine <prompt>` does the same. |
 
-The eight mods other than replay-theater, from helper-desk to effort-optimizer, come from Ben AI's benai-mods ([benai.co](https://www.benai.co)) and are redistributed with permission, with Windows fixes added here. replay-theater (one Ben AI change: `/mods` switch support) is Anthropic's sample mod from [anthropics/claude-code-playground](https://github.com/anthropics/claude-code-playground/tree/main/claude-code/mods/replay-theater), under the Apache 2.0 license in its `LICENSE`.
+The eight mods other than replay-theater, from helper-desk to effort-optimizer, come from Ben AI's benai-mods ([benai.co](https://www.benai.co)) and are redistributed with permission, with Windows fixes added here. replay-theater (changed here: `/mods` switch support from Ben AI, and the summary, edit list and SVG card) is Anthropic's sample mod from [anthropics/claude-code-playground](https://github.com/anthropics/claude-code-playground/tree/main/claude-code/mods/replay-theater), under the Apache 2.0 license in its `LICENSE`.
 
 ### Reflect setting
 
