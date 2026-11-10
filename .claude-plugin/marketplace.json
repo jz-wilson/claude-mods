@@ -15,6 +15,7 @@
     { "name": "mods", "source": "./mods" },
     { "name": "reflect", "source": "./reflect" },
     { "name": "replay-theater", "source": "./replay-theater" },
+    { "name": "savvy-progress", "source": "./savvy-progress" },
     { "name": "screen-share", "source": "./screen-share" }
   ]
 }

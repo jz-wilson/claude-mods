@@ -1,0 +1,48 @@
+{
+  "name": "savvy-progress",
+  "version": "1.3.0",
+  "description": "Progress bar above the prompt for /savvy-flow, plus an agents panel (/agents-info): running, finished and planned subagents with model, task progress, context, cost and time. Fork of johnnyvizz/claude-kit's savvy-progress that draws the pixel crabs in the terminal too.",
+  "author": {
+    "name": "johnnyvizz",
+    "url": "https://github.com/johnnyvizz"
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "language": {
+      "type": "string",
+      "title": "Panel language",
+      "description": "auto follows Claude Code's language setting, then the system locale; en, ru or he (Hebrew, drawn right to left)",
+      "default": "auto",
+      "options": [
+        "auto",
+        "en",
+        "ru",
+        "he"
+      ]
+    },
+    "autoOpen": {
+      "type": "string",
+      "title": "Open the agents panel",
+      "description": "savvy: when a savvy-flow worker starts or a plan is reported; any: also when any other subagent starts",
+      "default": "savvy",
+      "options": [
+        "savvy",
+        "any"
+      ]
+    },
+    "crabs": {
+      "type": "string",
+      "title": "Crabs in the terminal panel",
+      "description": "walk: each agent's pixel crab steps while it runs; still: the crabs are drawn but never move; off: a coloured mark instead of a crab",
+      "default": "walk",
+      "options": [
+        "walk",
+        "still",
+        "off"
+      ]
+    }
+  },
+  "homepage": "https://github.com/johnnyvizz/claude-kit/tree/main/plugins/savvy-progress",
+  "repository": "https://github.com/johnnyvizz/claude-kit",
+  "license": "MIT"
+}
