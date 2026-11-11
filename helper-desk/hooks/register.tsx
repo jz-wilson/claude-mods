@@ -1236,8 +1236,9 @@ const PLAN_PROMPT =
   'A step that launches subagents is one step. Skip it only for a one-line answer with no tool calls.'
 // Main-chat tool calls in a turn before the nudge to make a plan.
 const NUDGE_AFTER = 1
-// Tool calls since the last plan update before the nudge to tick it.
-const STALE_AFTER = 8
+// Tool calls since the last plan update before the nudge to tick it. A step of real work is often
+// ten or more calls (edits, tests, reads), so a lower number nags in the middle of one.
+const STALE_AFTER = 20
 const NUDGE_NEW =
   'Helper Desk: you have no plan for this task yet. Call mcp__helper-desk__plan now with every step in order, so the user sees your progress.'
 const NUDGE_CONT =
