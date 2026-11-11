@@ -1,7 +1,7 @@
 {
   "name": "savvy-progress",
-  "version": "1.3.0",
-  "description": "Progress bar above the prompt for /savvy-flow, plus an agents panel (/agents-info): running, finished and planned subagents with model, task progress, context, cost and time. Fork of johnnyvizz/claude-kit's savvy-progress that draws the pixel crabs in the terminal too.",
+  "version": "1.4.0",
+  "description": "Progress bar above the prompt for /savvy-flow, plus an agents panel (/agents-info): running, finished and planned subagents with model, task progress, context, cost and time. Fork of johnnyvizz/claude-kit's savvy-progress: the terminal panel draws an animated Claude crab per agent that acts out what the agent is doing, a progress bar with state colours, a task bar, and an expandable tool log per agent.",
   "author": {
     "name": "johnnyvizz",
     "url": "https://github.com/johnnyvizz"

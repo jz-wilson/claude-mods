@@ -16,6 +16,14 @@ export type Flow = {
   tasks: PlannedTask[]
 }
 
+/** One tool call an agent made: the tool, a short hint at what it touched, its class and when. */
+export type ToolLog = {
+  name: string
+  hint: string
+  kind: string
+  at: number
+}
+
 export type AgentStatus = 'running' | 'done' | 'failed'
 
 export type AgentRun = {
@@ -38,12 +46,19 @@ export type AgentRun = {
   stepDone?: number
   stepTotal?: number
   stepNote?: string
+  /** What the agent last did, as a class (`read`, `build`, `shell`...); never the command itself. */
+  doing?: string
+  /** How many tool calls it has made, and the latest of them (the log keeps the last 40). */
+  calls?: number
+  log?: ToolLog[]
 }
 
 export type Panel = {
   isCompact: boolean
   isDoneCollapsed: boolean
   autoOpenedFor: string
+  /** Agent ids whose card shows its tool log. */
+  expanded?: string[]
 }
 
 declare module 'claude-code' {

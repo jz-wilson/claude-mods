@@ -2,7 +2,22 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { AgentRun, Flow, Panel, Phase, PlannedTask } from '../types'
-import { SPRITE_COLUMNS, SPRITE_ROWS, crabCells } from './sprite'
+import type { Activity } from './agent-shader'
+import {
+  AVATAR_COLUMNS,
+  AVATAR_ROWS,
+  EFFORT_STYLE,
+  TASK_STYLE,
+  drawAgentAvatar,
+  drawBrailleSparkline,
+  activityOf,
+  drawProgressBar,
+  drawTaskBar,
+  toolHintOf,
+  effortLevelOf,
+  modelTierOf,
+  taskKindOf,
+} from './agent-shader'
 
 const flow = atom({ plugin: 'savvy-progress', key: 'flow' } as const, null)
 const agents = atom({ plugin: 'savvy-progress', key: 'agents' } as const, [])
@@ -10,6 +25,7 @@ const panel = atom({ plugin: 'savvy-progress', key: 'panel' } as const, {
   isCompact: false,
   isDoneCollapsed: false,
   autoOpenedFor: '',
+  expanded: [],
 })
 const now = atom({ plugin: 'savvy-progress', key: 'now' } as const, 0)
 
@@ -27,6 +43,9 @@ const TIERS: readonly string[] = ['fable', 'heavy', 'careful', 'medium', 'light'
 // The tools' schemas are advice to the model, not a check: what a call may ask
 // the band and the panel to draw is bounded here.
 const MAX_TASKS = 200
+// Tool calls kept per agent, and shown when a card is opened.
+const MAX_LOG = 40
+const SHOWN_LOG = 8
 const MAX_AFTER = 20
 const MAX_TITLE = 120
 const ACCENT = '#8f8cf4'
@@ -76,6 +95,8 @@ const STRINGS = {
     review: 'Review',
     busy: 'running',
     ctx: 'ctx',
+    calls: 'tools',
+    earlier: 'earlier',
     tier: { light: 'light', medium: 'medium', careful: 'careful', heavy: 'heavy', fable: 'fable', other: 'other' },
     effort: { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' },
   },
@@ -107,6 +128,8 @@ const STRINGS = {
     review: 'Ревью',
     busy: 'в работе',
     ctx: 'ctx',
+    calls: 'инстр.',
+    earlier: 'ранее',
     tier: { light: 'light', medium: 'medium', careful: 'careful', heavy: 'heavy', fable: 'fable', other: 'other' },
     effort: { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' },
   },
@@ -138,6 +161,8 @@ const STRINGS = {
     review: 'בדיקה',
     busy: 'בעבודה',
     ctx: 'הקשר',
+    calls: 'כלים',
+    earlier: 'קודם',
     tier: { light: 'קל', medium: 'בינוני', careful: 'זהיר', heavy: 'כבד', fable: 'פייבל', other: 'אחר' },
     effort: { low: 'נמוך', medium: 'בינוני', high: 'גבוה', xhigh: 'גבוה מאוד', max: 'מקסימלי' },
   },
@@ -777,17 +802,94 @@ const CRAB_MIN_COLUMNS = 44
 // Three stat tiles side by side need about this much; narrower, the totals are one line.
 const TILES_MIN_COLUMNS = 46
 
-// How the terminal draws crabs: walking while their agent runs, standing still, or not at all.
+// How the terminal draws the card avatars and context bars: animated while their agent runs
+// (`walk`), drawn once and held (`still`), or as plain text (`off`).
 export type CrabMode = 'walk' | 'still' | 'off'
 export const crabModeOf = (option: unknown): CrabMode => (option === 'still' || option === 'off' ? option : 'walk')
 
-// The columns the crab takes in a card `cols` wide: all of them or none.
-export const crabColumns = (cols: number, mode: CrabMode): number => (mode !== 'off' && cols >= CRAB_MIN_COLUMNS ? SPRITE_COLUMNS : 0)
+// The columns the avatar takes in a card `cols` wide: all of them or none.
+export const crabColumns = (cols: number, mode: CrabMode): number => (mode !== 'off' && cols >= CRAB_MIN_COLUMNS ? AVATAR_COLUMNS : 0)
 
-// The cells of one costume's crab, for a Raster of SPRITE_COLUMNS by SPRITE_ROWS.
-export const crabRaster = (costume: string, look: { isWalking?: boolean; frame?: number; isDim?: boolean }): string => {
-  const draw = COSTUMES[costume] ?? COSTUMES.other
-  return crabCells(f => draw?.(f, colorOf(costume)), { ...look, isMirrored: isRtl() })
+// The Rasters the terminal pane drew last, repainted by `paintLive` between redraws. Module
+// state, not `$.state`: it is only what the last draw mounted, rebuilt by every draw.
+type LiveRaster = { key: string; isFinished: boolean; draw: (tMs: number) => string }
+let live: LiveRaster[] = []
+let paintCount = 0
+let deniedFrames = 0
+let isPainting = false
+const DENIED_FRAMES_LIMIT = 10
+// What a `still` card draws: one fixed moment, so a redraw never changes it.
+const STILL_T = 0
+// Burn per second across the running agents, newest last: what the Cost and Tokens tiles plot.
+const BURN_SAMPLES = 24
+let burn = { cost: [] as number[], tokens: [] as number[], lastCost: 0, lastTokens: 0 }
+// A finished agent breathes slower: it is repainted on every FINISHED_EVERY-th frame.
+const FINISHED_EVERY = 4
+const FRAME_MS = 50
+
+// Repaints every mounted avatar and bar. Fire and forget: no redraw, so no 10 a second cap.
+// A `deny` means nothing of ours is mounted there (pane closed, resized), so stop until the next draw.
+async function paintLive($: EngineInterface): Promise<void> {
+  const rasters = live
+  if (rasters.length === 0 || isPainting) return
+  // One frame at a time: a slow host must not stack frames up behind each other.
+  isPainting = true
+  try {
+    paintCount += 1
+    const t = await $.clock.now()
+    const due = rasters.filter(r => !r.isFinished || paintCount % FINISHED_EVERY === 0)
+    if (due.length === 0) return
+    const results = await Promise.all(due.map(r => $.ui.blit({ requestId: PANE, key: r.key, cells: r.draw(t) })))
+    // The first frames can land before the draw is on screen, so one refusal proves nothing: a
+    // run of them, every raster refused, says the canvas is gone.
+    deniedFrames = results.every(r => r.deny !== undefined) ? deniedFrames + 1 : 0
+    if (deniedFrames >= DENIED_FRAMES_LIMIT && live === rasters) {
+      live = []
+      deniedFrames = 0
+    }
+  } catch {
+    // The host went away (a reload, a shutdown) or a frame failed to draw: stop painting until the
+    // next draw puts the rasters back, rather than failing again 20 times a second.
+    live = []
+    deniedFrames = 0
+  } finally {
+    isPainting = false
+  }
+}
+
+// The fill a bar shows now, per bar: it slides a quarter of the way to its target on every frame
+// (about 0.3 s to settle at 20 frames a second) instead of jumping. A bar not being repainted, or
+// one with no history, takes its target at once.
+const shownFill = new Map<string, number>()
+const EASE = 0.25
+function easeTo(key: string, target: number, isAnimated: boolean): number {
+  const from = shownFill.get(key) ?? target
+  const next = isAnimated && Math.abs(target - from) > 0.05 ? from + (target - from) * EASE : target
+  shownFill.set(key, next)
+  return next
+}
+
+const toggled = (ids: string[], id: string): string[] => (ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id])
+
+// A stored activity is a string; only the known classes draw a scene.
+const ACTIVITIES: readonly string[] = ['think', 'read', 'build', 'shell', 'test', 'web', 'sub', 'gear', 'install', 'git']
+const activityFrom = (doing: string | undefined): Activity | undefined => (doing !== undefined && ACTIVITIES.includes(doing) ? (doing as Activity) : undefined)
+
+// Samples the running agents' burn once a second; a quiet pane clears its history. True when
+// that cleared something, so the pane is redrawn without the sparklines.
+function sampleBurn(list: AgentRun[], at: number): boolean {
+  if (!list.some(a => a.status === 'running')) {
+    const hadHistory = burn.cost.length > 0
+    burn = { cost: [], tokens: [], lastCost: 0, lastTokens: 0 }
+    return hadHistory
+  }
+  const t = totals(list, at)
+  const first = burn.cost.length === 0 && burn.lastCost === 0
+  burn.cost = [...burn.cost, first ? 0 : Math.max(0, t.cost - burn.lastCost)].slice(-BURN_SAMPLES)
+  burn.tokens = [...burn.tokens, first ? 0 : Math.max(0, t.tokens - burn.lastTokens)].slice(-BURN_SAMPLES)
+  burn.lastCost = t.cost
+  burn.lastTokens = t.tokens
+  return false
 }
 
 // Opens the agents pane, or closes it when it is up; true when it ends up open.
@@ -873,11 +975,14 @@ export const register: Register = (on, options) => {
     $.clock.every(1000, () => {
       void (async () => {
         const list = await read($, agents)
-        if (!list.some(a => a.status === 'running')) return
+        const isCleared = sampleBurn(list, await $.clock.now())
+        if (!isCleared && !list.some(a => a.status === 'running')) return
         const at = await $.clock.now()
         await update($, now, () => at)
       })()
     })
+    // The avatars and bars: about 20 frames a second, and nothing to do while none are mounted.
+    $.clock.every(FRAME_MS, () => void paintLive($))
     return started
   })
 
@@ -985,6 +1090,8 @@ export const register: Register = (on, options) => {
     if (!agentId || !usage) return result
 
     const model = usage.model || e.model
+    const lastUse = result.toolUses.at(-1)
+    const stepAt = await $.clock.now()
     await update($, agents, list =>
       list.map((a): AgentRun =>
         a.agentId !== agentId
@@ -1009,6 +1116,12 @@ export const register: Register = (on, options) => {
                 (usage.cache_creation_input_tokens || 0),
               costUsd: a.costUsd + costOf(model, usage, true),
               steps: a.steps + 1,
+              doing: lastUse ? activityOf(lastUse.name, lastUse.input) : a.doing,
+              calls: (a.calls ?? 0) + result.toolUses.length,
+              log: [
+                ...(a.log ?? []),
+                ...result.toolUses.map(use => ({ name: use.name, hint: toolHintOf(use.name, use.input), kind: activityOf(use.name, use.input), at: stepAt })),
+              ].slice(-MAX_LOG),
             },
       ),
     )
@@ -1059,6 +1172,7 @@ export const register: Register = (on, options) => {
     const running = list.filter(a => a.status === 'running').reverse()
     const finished = list.filter(a => a.status !== 'running').reverse()
     const planned = plannedOf(f, list)
+    for (const key of [...shownFill.keys()]) if (!list.some(a => `ctxbar-${a.id}` === key)) shownFill.delete(key)
     const t = totals(list, at)
     // The pane's title says "Agents"; inside, only the flow's own name.
     const title = f && !f.isFinished ? f.title : ''
@@ -1134,25 +1248,23 @@ export const register: Register = (on, options) => {
     }
 
     // Terminal: the same content in text rows.
-    // Each agent is a card: its crab in costume on one side (a Raster of half-block pixels),
-    // and beside it the title, tier and model, its step, a bar and the totals.
+    // Each agent is a bordered card: its avatar on one side (a Raster of half-block pixels, drawn
+    // by task, model and effort), and beside it the title, tier and model, its step, a context
+    // bar and the totals. The Rasters are repainted by `paintLive` between redraws.
     const cols = Math.max(24, e.props.bodyColumns || 40)
     const mode = crabModeOf(options.crabs)
-    const crabW = 'Raster' in ui ? crabColumns(cols, mode) : 0
-    // What the text column keeps after the crab and the gap beside it.
-    const textW = cols - (crabW ? crabW + 2 : 2)
+    const hasRaster = 'Raster' in ui
+    const avatarW = hasRaster ? crabColumns(cols, mode) : 0
+    // What the text column keeps after the border, its padding and the avatar with the gap beside it.
+    const textW = cols - 4 - (avatarW ? avatarW + 1 : 0)
     const barW = Math.max(6, Math.min(40, textW - 16))
-    // The pane redraws once a second while an agent runs, so the walk steps once a second.
-    const frame = Math.floor(at / 1000)
-    const sprite = (key: string, costume: string, isWalking: boolean, isDim: boolean) =>
-      crabW && 'Raster' in ui ? (
-        <ui.Raster
-          key={key}
-          columns={SPRITE_COLUMNS}
-          rows={SPRITE_ROWS}
-          cells={crabRaster(costume, { isWalking: isWalking && mode === 'walk', frame, isDim })}
-        />
-      ) : null
+    const drawn: LiveRaster[] = []
+    const raster = (key: string, columns: number, rows: number, isFinished: boolean, draw: (tMs: number) => string, isStatic = false) => {
+      if (!('Raster' in ui)) return null
+      // `still` holds the first frame; every other mode registers the raster for repainting.
+      if (mode === 'walk' && !isStatic) drawn.push({ key, isFinished, draw })
+      return <ui.Raster key={key} columns={columns} rows={rows} cells={draw(mode === 'walk' ? at : STILL_T)} />
+    }
     const row = (a: AgentRun) => {
       const tier = tierOf(a.type)
       const color = colorOf(tier)
@@ -1161,19 +1273,62 @@ export const register: Register = (on, options) => {
       const model = runModel(a)
       const isRunning = a.status === 'running'
       const steps = a.stepTotal ? `${a.stepDone ?? 0}/${a.stepTotal}${a.stepNote ? ' · ' + a.stepNote : ''}` : `${s.ctx} ${ctx}%`
-      const crabArt = sprite(`crab-${a.id}`, costumeOf(a.type), isRunning, !isRunning)
+      const task = taskKindOf(a.description)
+      const modelTier = modelTierOf(a.model)
+      const effort = effortLevelOf(a.effort)
+      const look = TASK_STYLE[task]
+      const badge = EFFORT_STYLE[effort]
+      const phase = (tMs: number) => Math.max(0, tMs - a.startedAt)
+      const isOpen = (p.expanded ?? []).includes(a.id)
+      const calls = a.calls ?? 0
+      const shownLog = (a.log ?? []).slice(-SHOWN_LOG)
+      const hiddenCalls = Math.max(0, calls - shownLog.length)
+      // A running agent cycles scenes as it works; a finished one keeps its own.
+      const seed = isRunning ? a.steps : [...a.id].reduce((n, c) => n + c.charCodeAt(0), 0)
+      const avatar = avatarW
+        ? raster(`avatar-${a.id}`, AVATAR_COLUMNS, AVATAR_ROWS, !isRunning, tMs => drawAgentAvatar(task, modelTier, effort, !isRunning, phase(tMs), a.status === 'failed', activityFrom(a.doing), seed))
+        : null
+      const percent = progress === null ? ctx : progress * 100
+      const bar =
+        mode !== 'off'
+          ? raster(
+              `ctxbar-${a.id}`,
+              barW,
+              1,
+              !isRunning,
+              tMs =>
+                drawProgressBar({
+                  columns: barW,
+                  // A finished run's bar is full: it is complete, whatever the context says.
+                  value: a.status === 'done' ? 100 : easeTo(`ctxbar-${a.id}`, percent, mode === 'walk' && isRunning),
+                  state: isRunning ? 'running' : a.status === 'failed' ? 'failed' : 'done',
+                  model: modelTier,
+                  effort,
+                  tMs: phase(tMs),
+                  contextPercent: ctx,
+                  showContext: progress !== null || a.status === 'done',
+                }),
+              !isRunning,
+            )
+          : null
       return (
-        <Box key={a.id} flexDirection="row" gap={2} marginBottom={1}>
-          {crabArt}
+        <Box key={a.id} flexDirection="row" gap={1} paddingX={1} borderStyle={badge.borderStyle} borderColor={look.accent}>
+          {avatar}
           <Box flexDirection="column" flexShrink={1} flexGrow={1} justifyContent="center">
             <Box flexDirection="row" gap={1}>
-              {crabArt ? null : <Text color={color}>▣</Text>}
+              {avatar ? null : <Text color={color}>▣</Text>}
+              <Text color={look.accent}>{look.prefix}</Text>
               <Box flexShrink={1}>
-                <Text weight="bold" wrap="truncate-end">
-                  {a.description || a.type}
-                </Text>
+                {/* A press on the title opens the card: the tool calls this agent made. */}
+                <Button key={`open-${a.id}`} plain onPress={() => void update($, panel, prev => ({ ...prev, expanded: toggled(prev.expanded ?? [], a.id) }))}>
+                  <Text color={look.accent}>{isOpen ? '▾ ' : '▸ '}</Text>
+                  <Text weight="bold" wrap="truncate-end">
+                    {a.description || a.type}
+                  </Text>
+                </Button>
               </Box>
-              <Text color={a.status === 'failed' ? 'error' : a.status === 'done' ? 'success' : color}>{STATUS_GLYPH[a.status]}</Text>
+              <Text color={a.status === 'failed' ? 'error' : a.status === 'done' ? '#22c55e' : color}>{STATUS_GLYPH[a.status]}</Text>
+              <Text color={badge.color}>{badge.badge}</Text>
             </Box>
             <Text wrap="truncate-end">
               <Text color={color}>{tier === 'other' ? a.type : tierWord(tier)}</Text>
@@ -1186,20 +1341,87 @@ export const register: Register = (on, options) => {
             <Text dimColor={!isRunning} wrap="truncate-end">
               {steps}
             </Text>
-            <Text wrap="truncate-end">
-              {progress === null ? <Text dimColor>{ctxBar(ctx, barW)}</Text> : <Text color={color}>{ctxBar(progress * 100, barW)}</Text>}
-            </Text>
+            {bar ?? (
+              <Text wrap="truncate-end">
+                {progress === null ? <Text dimColor>{ctxBar(ctx, barW)}</Text> : <Text color={color}>{ctxBar(progress * 100, barW)}</Text>}
+              </Text>
+            )}
             <Text dimColor wrap="truncate-end">
               {/* Context first: it is the shortest part, so a narrow card cuts the time, not this. */}
-              {a.stepTotal ? `${s.ctx} ${ctx}% · ` : ''}≈{fmtCost(a.costUsd)} · {fmtTokens(a.contextTokens)} · {fmtTime(elapsed(a, at))}
+              {a.stepTotal ? `${s.ctx} ${ctx}% · ` : ''}{calls > 0 ? `${calls} ${calls === 1 && lang === 'en' ? 'tool' : s.calls} · ` : ''}≈{fmtCost(a.costUsd)} · {fmtTokens(a.contextTokens)} · {fmtTime(elapsed(a, at))}
             </Text>
+            {isOpen && (
+              <Box flexDirection="column" marginTop={1}>
+                {hiddenCalls > 0 && (
+                  <Text dimColor wrap="truncate-end">
+                    +{hiddenCalls} {s.earlier}
+                  </Text>
+                )}
+                {shownLog.length === 0 && <Text dimColor>—</Text>}
+                {shownLog.map((use, i) => {
+                  const isNow = isRunning && i === shownLog.length - 1
+                  return (
+                    <Text key={`${a.id}-log-${hiddenCalls + i}`} wrap="truncate-end">
+                      <Text color={isNow ? look.accent : '#22c55e'}>{isNow ? '▶' : '✓'}</Text> <Text weight={isNow ? 'bold' : undefined}>{use.name}</Text>
+                      <Text dimColor> {use.hint}</Text>
+                    </Text>
+                  )
+                })}
+              </Box>
+            )}
           </Box>
         </Box>
       )
     }
 
+    // The finished section's header stands out: a green box, a tick and a flourish.
+    const doneHeader = (
+      <Box key="done-head" flexDirection="row" borderStyle="round" borderColor="#22c55e" paddingX={1}>
+        <Button key="done" plain onPress={() => update($, panel, prev => ({ ...prev, isDoneCollapsed: !prev.isDoneCollapsed }))}>
+          <Text color="#22c55e" weight="bold">
+            {p.isDoneCollapsed ? (isRtl() ? '◂' : '▸') : '▾'} ✦ ✔ {s.finished.toUpperCase()} · {finished.length} ✦
+          </Text>
+        </Button>
+      </Box>
+    )
+
+    // How many tasks there are, how many are done, and the same as one bar.
+    const doneCount = list.filter(a => a.status === 'done').length
+    const failedCount = list.filter(a => a.status === 'failed').length
+    const totalCount = list.length + planned.length
+    const taskBarW = Math.min(512, Math.max(8, cols - 2))
+    const taskSummary =
+      totalCount > 0 ? (
+        <Box key="task-summary" flexDirection="column">
+          <Text wrap="truncate-end">
+            <Text weight="bold">
+              {s.tasks} {doneCount}/{totalCount}
+            </Text>
+            <Text dimColor>
+              {' · '}
+              {running.length} {s.isRunning}
+              {failedCount > 0 ? ` · ${failedCount} ${s.failed}` : ''}
+              {planned.length > 0 ? ` · ${planned.length} ${s.isPlanned}` : ''}
+            </Text>
+          </Text>
+          {mode === 'off'
+            ? null
+            : raster(
+                'taskbar',
+                taskBarW,
+                1,
+                running.length === 0,
+                tMs => drawTaskBar({ columns: taskBarW, done: doneCount, failed: failedCount, running: running.length, planned: planned.length, tMs }),
+                running.length === 0,
+              )}
+        </Box>
+      ) : null
+
     // The totals as three tiles, like the SVG panel's header; one line when there is no room.
-    const tile = (key: string, name: string, value: string) => (
+    // Cost and Tokens also plot their burn per second: a Braille sparkline a little narrower than
+    // the tile's inside (a third of the row, less the border, padding and one spare column).
+    const sparkW = Math.floor((cols - 2) / 3) - 5
+    const tile = (key: string, name: string, value: string, burnValues?: number[]) => (
       <Box key={key} flexDirection="column" flexGrow={1} flexShrink={1} borderStyle="round" borderColor="promptBorder" paddingX={1}>
         <Text dimColor wrap="truncate-end">
           {name}
@@ -1207,13 +1429,16 @@ export const register: Register = (on, options) => {
         <Text weight="bold" wrap="truncate-end">
           {value}
         </Text>
+        {burnValues && hasRaster && mode !== 'off' && sparkW >= 6 && burnValues.length >= 2 ? (
+          <ui.Raster key={`spark-${key}`} columns={sparkW} rows={1} cells={drawBrailleSparkline(sparkW, 1, burnValues)} />
+        ) : null}
       </Box>
     )
     const totalsRow =
       cols >= TILES_MIN_COLUMNS ? (
         <Box flexDirection="row" gap={1}>
-          {tile('cost', s.cost, `≈${fmtCost(t.cost)}`)}
-          {tile('tokens', s.tokens, fmtTokens(t.tokens))}
+          {tile('cost', s.cost, `≈${fmtCost(t.cost)}`, burn.cost)}
+          {tile('tokens', s.tokens, fmtTokens(t.tokens), burn.tokens)}
           {tile('time', s.time, fmtTime(t.time))}
         </Box>
       ) : (
@@ -1222,7 +1447,8 @@ export const register: Register = (on, options) => {
         </Text>
       )
 
-    return (
+    // The tree is built first: building it is what registers the Rasters to repaint.
+    const tree = (
       <Box flexDirection="column">
         <Box flexDirection="row" justifyContent="space-between">
           <Box flexShrink={1}>
@@ -1233,6 +1459,7 @@ export const register: Register = (on, options) => {
           {toggleCompact}
         </Box>
         {totalsRow}
+        {taskSummary}
         {p.isCompact ? (
           <Text wrap="truncate-end">
             {[...running, ...finished].map(a => (
@@ -1251,7 +1478,7 @@ export const register: Register = (on, options) => {
             {isEmpty && <Text dimColor>{s.empty}</Text>}
             {running.length > 0 && <Text dimColor>{s.running} · {running.length}</Text>}
             {running.map(row)}
-            {finished.length > 0 && toggleDone}
+            {finished.length > 0 && doneHeader}
             {!p.isDoneCollapsed && finished.map(row)}
             {planned.length > 0 && <Text dimColor>{s.planned} · {planned.length}</Text>}
             {planned.map(pl => {
@@ -1273,6 +1500,8 @@ export const register: Register = (on, options) => {
         )}
       </Box>
     )
+    live = drawn
+    return tree
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
