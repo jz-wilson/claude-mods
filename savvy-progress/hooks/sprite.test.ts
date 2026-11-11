@@ -2,15 +2,12 @@ import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import { crabColumns, crabModeOf, crabRaster } from './register'
-import { SPRITE_COLUMNS, SPRITE_ROWS, crabPixels, crabWords, encodeWords, parseColor } from './sprite'
+import { AVATAR_COLUMNS, AVATAR_ROWS } from './agent-shader'
+import { crabColumns, crabModeOf } from './register'
+import { SPRITE_COLUMNS, crabPixels, crabWords, encodeWords, parseColor } from './sprite'
 import type { Fill } from './sprite'
 
 const PLUGIN = 'savvy-progress'
-const COSTUMES = ['fable', 'heavy', 'careful', 'medium', 'light', 'explore', 'other'] as const
-const CELLS = SPRITE_COLUMNS * SPRITE_ROWS
-// The characters a crab may use: a space, and the upper and lower half blocks.
-const ALLOWED = new Set([0x20, 0x2580, 0x2584])
 
 // What a Raster reads back: the words behind a base64 `cells` string.
 function decode(cells: string): Uint32Array {
@@ -33,25 +30,6 @@ test('sprite: the encoder writes little-endian u32 as padded base64', () => {
   expect(decode(encodeWords(words))).toEqual(words)
   expect(encodeWords(Uint32Array.of(1))).toBe('AQAAAA==')
 })
-
-for (const costume of COSTUMES) {
-  test(`sprite: the ${costume} crab fills its Raster with printable cells`, () => {
-    for (const look of [{}, { isWalking: true, frame: 0 }, { isWalking: true, frame: 1 }, { isDim: true }]) {
-      const words = decode(crabRaster(costume, look))
-      expect(words.length, 'three words a cell').toBe(CELLS * 3)
-      let drawn = 0
-      for (let cell = 0; cell < CELLS; cell++) {
-        const [codePoint = 0, foreground = 0, background = 0] = words.subarray(cell * 3, cell * 3 + 3)
-        expect(ALLOWED.has(codePoint), `cell ${cell} is a space or a half block`).toBe(true)
-        expect(foreground <= 0x01000000 && background <= 0x01000000, `cell ${cell} colours are RGB or the default`).toBe(true)
-        if (codePoint !== 0x20) drawn += 1
-      }
-      // The body alone covers a third of the grid; an empty or solid sprite is a bug.
-      expect(drawn).toBeGreaterThan(CELLS / 4)
-      expect(drawn).toBeLessThan(CELLS)
-    }
-  })
-}
 
 test('sprite: walking lifts one leg pair per frame, standing never moves, dimming changes colour only', () => {
   const draw = (f: Fill) => {
@@ -86,9 +64,9 @@ test('sprite: mirroring flips the crab, and a translucent fill over nothing draw
   expect(Array.from(glass).filter((_, i) => i % 3 === 0).every(codePoint => codePoint === 0x20)).toBe(true)
 })
 
-test('sprite: the crab is dropped when the card is narrow or crabs are off', () => {
-  expect(crabColumns(144, 'walk')).toBe(SPRITE_COLUMNS)
-  expect(crabColumns(44, 'still')).toBe(SPRITE_COLUMNS)
+test('sprite: the avatar is dropped when the card is narrow or crabs are off', () => {
+  expect(crabColumns(144, 'walk')).toBe(AVATAR_COLUMNS)
+  expect(crabColumns(44, 'still')).toBe(AVATAR_COLUMNS)
   expect(crabColumns(43, 'walk')).toBe(0)
   expect(crabColumns(144, 'off')).toBe(0)
   expect(crabModeOf('still')).toBe('still')
@@ -108,20 +86,25 @@ const worker = async ($: Engine, on: On) => {
   await $.agent.spawn({ tool_use_id: 't1', prompt: 'p', description: 'Build the landing page', subagentType: 'savvy-light', provider: 'engine', parentModel: 'claude-haiku-5-5', background: false, fork: false } as never)
 }
 
-test('terminal pane: a card has a crab at 60 and 144 columns and none at 40, and keeps its text at every width', async ($, on) => {
+test('terminal pane: a card has an avatar at 60 and 144 columns and none at 40, and keeps its text at every width', async ($, on) => {
   await worker($, on)
   for (const width of [40, 60, 144]) {
     const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'savvy-agents', props: paneProps(width) })
-    const raster = await ui.find({ type: 'Raster' })
+    const rasters = await ui.findAll({ type: 'Raster' })
+    const avatar = rasters.find(r => r.props.key === 'avatar-a1')
+    const bar = rasters.find(r => r.props.key === 'ctxbar-a1')
     if (width < 44) {
-      expect(raster, `no crab at ${width}`).toBeUndefined()
+      expect(avatar, `no avatar at ${width}`).toBeUndefined()
     } else {
-      expect(Number(raster?.props.columns), `crab columns at ${width}`).toBe(SPRITE_COLUMNS)
-      expect(Number(raster?.props.rows), `crab rows at ${width}`).toBe(SPRITE_ROWS)
-      expect(decode(String(raster?.props.cells)).length).toBe(CELLS * 3)
-      // The text beside the crab keeps at least 24 columns.
-      expect(width - SPRITE_COLUMNS - 4).toBeGreaterThanOrEqual(24)
+      expect(Number(avatar?.props.columns), `avatar columns at ${width}`).toBe(AVATAR_COLUMNS)
+      expect(Number(avatar?.props.rows), `avatar rows at ${width}`).toBe(AVATAR_ROWS)
+      expect(decode(String(avatar?.props.cells)).length).toBe(AVATAR_COLUMNS * AVATAR_ROWS * 3)
+      // The text beside the avatar keeps at least 24 columns: the border, padding and gap come off.
+      expect(width - AVATAR_COLUMNS - 5).toBeGreaterThanOrEqual(24)
     }
+    // The bar fits the card at every width: the border and padding come off, and never more than 40.
+    expect(Number(bar?.props.columns), `bar columns at ${width}`).toBeLessThanOrEqual(width - 4)
+    expect(Number(bar?.props.rows)).toBe(1)
     expect((await ui.find({ type: 'Text', text: /Build the landing page/ }))?.text).toBe('Build the landing page')
     expect(await ui.find({ type: 'Text', text: /Haiku 5\.5/ }), `model at ${width}`).toBeDefined()
     await ui.unmount()
