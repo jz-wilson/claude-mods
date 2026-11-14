@@ -375,7 +375,7 @@ function drawCrab(look: Look): (readonly [number, number, number])[][] {
       for (const c of quad) if (c !== undefined) counts.set(c, (counts.get(c) ?? 0) + 1)
       const [a, b] = [...counts.entries()].sort((p, r) => r[1] - p[1]).map(e => e[0])
       if (a === undefined) return [0x20, DEFAULT_COLOR, DEFAULT_COLOR]
-      const mask = quad.reduce((m, c, i) => (c === a ? m | (8 >> i) : m), 0)
+      const mask = quad.reduce<number>((m, c, i) => (c === a ? m | (8 >> i) : m), 0)
       return [QUADRANTS.codePointAt(mask) ?? 0x20, a, b ?? DEFAULT_COLOR]
     }),
   )

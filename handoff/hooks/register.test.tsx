@@ -109,7 +109,9 @@ for (const surface of ['desktop', 'terminal'] as const) {
     const props = { isWorking: false, hasSurvey: false } as never
     await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface, isInteractive: true } as never)
 
-    let v = await $.ui.mount({ plugin: 'handoff', surface, component: 'AbovePrompt', props })
+    // Widened so the remounts inside the surface branches below keep the same Mounted type.
+    const anySurface: 'terminal' | 'desktop' = surface
+    let v = await $.ui.mount({ plugin: 'handoff', surface: anySurface, component: 'AbovePrompt', props })
     expect(await v.find({ key: 'refresh' }), 'no offer below 250k').toBeUndefined()
 
     tokens = 262_000
@@ -149,7 +151,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       await clock.settle()
       expect(commands, 'terminal start clears the chat').toEqual(['clear'])
       expect(fills[0] ?? '', 'the prompt holds /pickup and the saved file').toBe(`/pickup ${saved?.[0]}`)
-      v = await $.ui.mount({ plugin: 'handoff', surface, component: 'AbovePrompt', props })
+      v = await $.ui.mount({ plugin: 'handoff', surface: anySurface, component: 'AbovePrompt', props })
       expect(await v.find({ key: 'copy' }), 'the panel closes after the clear').toBeUndefined()
       await v.unmount()
     } else {
@@ -162,7 +164,7 @@ for (const surface of ['desktop', 'terminal'] as const) {
       expect(body.text ?? '').toContain('# Handoff:')
 
       await v.press({ key: 'close' })
-      v = await $.ui.mount({ plugin: 'handoff', surface, component: 'AbovePrompt', props })
+      v = await $.ui.mount({ plugin: 'handoff', surface: anySurface, component: 'AbovePrompt', props })
       expect(await v.find({ key: 'copy' }), 'closed').toBeUndefined()
     }
   })

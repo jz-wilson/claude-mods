@@ -3,5 +3,6 @@
   "version": "0.2.0",
   "description": "Pane listing open Helpin PER-* tasks; pick one to have Claude start working on it",
   "author": { "name": "jz-wilson" },
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "engines": { "claude-code": ">=2.1.323" }
 }

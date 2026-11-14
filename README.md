@@ -68,10 +68,12 @@ To undo, copy `settings.json.bak-cache-bar` back over `settings.json`, or set `s
 
 ## Development
 
-Each mod is a folder with `.claude-plugin/plugin.json`. CI runs `claude plugin validate` on every mod for each push and pull request, then `claude plugin test` for mods with a hooks module and `bun test` for the rest. A merge to `main` that bumps a mod's `version` publishes a GitHub release tagged `<mod>-v<version>`.
+Each mod is a folder with `.claude-plugin/plugin.json`. CI runs `claude plugin validate --strict` on every mod for each push and pull request, which also type-checks the hooks modules and tests, then `claude plugin test` for mods with a hooks module and `bun test` for the rest. A merge to `main` that bumps a mod's `version` publishes a GitHub release tagged `<mod>-v<version>`.
+
+Each `plugin.json` sets `engines["claude-code"]`, the Claude Code versions the mod runs on. Claude Code does not install, update or load a mod outside that range. The floor is `>=2.1.323`, the first version that reads the field. When a mod starts using a mod API that is newer, raise its floor to the version that added the API.
 
 ```
-claude plugin validate agent-tree
+claude plugin validate --strict agent-tree
 claude plugin test agent-tree
 bun test cache-bar
 ```
