@@ -14,5 +14,6 @@
       "description": "The folder where Save to vault writes rule notes, for example ~/Documents/rules. Leave empty to be asked once and have the answer remembered.",
       "default": ""
     }
-  }
+  },
+  "engines": { "claude-code": ">=2.1.323" }
 }

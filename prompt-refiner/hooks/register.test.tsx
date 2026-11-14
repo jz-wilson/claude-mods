@@ -30,7 +30,7 @@ function band(bodyColumns: number, hasSurvey = false, maxRows = 14) {
     plugin: PLUGIN,
     component: 'AbovePrompt',
     requestId: 'band',
-    props: { hasSurvey, isWorking: false, maxRows, bodyColumns, scroll: { offset: 0, bodyRows: 10 }, view: {} },
+    props: { hasSurvey, isCollapsed: false, isWorking: false, maxRows, bodyColumns, scroll: { offset: 0, bodyRows: 10 }, view: {} },
   } as const
 }
 
@@ -219,7 +219,9 @@ test('the rewrite band fits every width and a short band', async ($, on) => {
       await ui.press({ key: 'structured' })
       for (const key of ['use', 'again', 'discard']) expect(await ui.find({ key }), `${key} at ${width}`).toBeDefined()
       // Two Texts share the header row; border (2) and the button row (2, wrapped) take the rest of maxRows.
-      expect((await ui.above.findAll({ type: 'Text' })).length - 1).toBeLessThanOrEqual(8 - 4)
+      // The host's own "engine" line also lives in the above band now, so it is not the rewrite's.
+      const rewriteTexts = (await ui.above.findAll({ type: 'Text' })).filter(el => el.text !== 'engine')
+      expect(rewriteTexts.length - 1).toBeLessThanOrEqual(8 - 4)
       expect(rawColors(await ui.findAll({}))).toEqual([])
       await ui.press({ key: 'discard' })
       await ui.unmount()
@@ -390,7 +392,8 @@ test('Show all expands a long rewrite, keeps the buttons on top, and Show less f
   expect(await textOf(ui, /step 30 of/)).toBe('- step 30 of the plan')
   expect(await textOf(ui, /more lines/)).toBeUndefined()
   expect(await textOf(ui, /Split into steps/)).toBe('+ Split into steps')
-  const order = (await ui.findAll({})).map(el => el.key ?? el.text ?? '')
+  // Boxes carry their descendants' joined text, so only the leaf Buttons and Texts say where each sits.
+  const order = (await ui.findAll({})).filter(el => el.type !== 'Box').map(el => el.key ?? el.text ?? '')
   expect(order.indexOf('use'), 'buttons before the body').toBeLessThan(order.findIndex(k => /step 1 of/.test(k)))
 
   await ui.press({ key: 'expand' })

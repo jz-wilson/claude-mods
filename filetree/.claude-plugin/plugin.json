@@ -1,6 +1,6 @@
 {
   "name": "filetree",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "IDE-style file tree that shows only the files Claude touched (fork of data-goblin/claude-code-filetree 0.2.26)",
   "types": "./types/index.d.ts",
   "author": {
@@ -101,5 +101,6 @@
       "default": ""
     }
   },
-  "license": "MIT"
+  "license": "MIT",
+  "engines": { "claude-code": ">=2.1.323" }
 }

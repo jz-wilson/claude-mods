@@ -1267,16 +1267,25 @@ export const register: Register = (on, options) => {
     return result
   })
 
-  for (const tool of ['Grep', 'Glob'] as const)
-    on('tool.call', { tool }, async ($, e, next) => {
-      const result = await next(e)
-      if (isOff || result.deny || result.isError) return result
-      const names = (result.result as Partial<BuiltinToolResults['Grep']> | undefined)?.filenames
-      if (!Array.isArray(names) || names.length === 0) return result
-      const cwd = await cwdOf($)
-      void touched($, names.slice(0, SEARCH_REVEAL_LIMIT).map(f => resolve(cwd, posix(f), home)), 'purple', showReads)
-      return result
-    })
+  on('tool.call', { tool: 'Grep' }, async ($, e, next) => {
+    const result = await next(e)
+    if (isOff || result.deny || result.isError) return result
+    const names = (result.result as Partial<BuiltinToolResults['Grep']> | undefined)?.filenames
+    if (!Array.isArray(names) || names.length === 0) return result
+    const cwd = await cwdOf($)
+    void touched($, names.slice(0, SEARCH_REVEAL_LIMIT).map(f => resolve(cwd, posix(f), home)), 'purple', showReads)
+    return result
+  })
+
+  on('tool.call', { tool: 'Glob' }, async ($, e, next) => {
+    const result = await next(e)
+    if (isOff || result.deny || result.isError) return result
+    const names = (result.result as Partial<BuiltinToolResults['Grep']> | undefined)?.filenames
+    if (!Array.isArray(names) || names.length === 0) return result
+    const cwd = await cwdOf($)
+    void touched($, names.slice(0, SEARCH_REVEAL_LIMIT).map(f => resolve(cwd, posix(f), home)), 'purple', showReads)
+    return result
+  })
 
   on('ui.message', async ($, e, next) => {
     if (e.requestId === PANE && e.element.startsWith('button-') && e.data && typeof e.data === 'object') {

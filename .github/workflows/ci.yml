@@ -29,21 +29,18 @@ jobs:
           bun-version: 1.2.21
       # --trust lets the package's postinstall fetch the native binary; bun skips it otherwise.
       - name: Install Claude Code
-        run: bun add -g --trust @anthropic-ai/claude-code@2.1.304
-      # A validation warning fails the build, so the marketplace and each mod stay clean.
+        run: bun add -g --trust @anthropic-ai/claude-code@2.1.325
+      # --strict fails on validation warnings, including TypeScript errors in hooks modules and tests
+      # (type checking since 2.1.323). Plugin directory advisories, such as a missing listing icon or
+      # license, are printed but do not fail the build.
       - name: Validate marketplace
-        run: |
-          out="$(claude plugin validate . 2>&1)"
-          echo "$out"
-          if grep -q '⚠' <<<"$out"; then echo "::error::marketplace validation has warnings"; exit 1; fi
+        run: claude plugin validate --strict .
       - name: Validate and test each mod
         run: |
           for manifest in */.claude-plugin/plugin.json; do
             mod="${manifest%%/*}"
             echo "::group::$mod"
-            out="$(claude plugin validate "$mod" 2>&1)"
-            echo "$out"
-            if grep -q '⚠' <<<"$out"; then echo "::error::$mod validation has warnings"; exit 1; fi
+            if ! claude plugin validate --strict "$mod"; then echo "::error::$mod validation failed"; exit 1; fi
             # claude plugin test needs a hooks module; a mod without one (such as a status-line script) runs bun test.
             if [ -f "$mod/hooks/hooks.json" ]; then claude plugin test "$mod"; else bun test "$mod"; fi
             echo "::endgroup::"

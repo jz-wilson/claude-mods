@@ -360,7 +360,7 @@ function rawColors(elements: FoundElement[]): string[] {
 
 // A machine with every known mod installed and one switches.json, for the pane tests below.
 type Opts = { installed?: () => string; opened?: string[]; run?: () => Promise<void>; extra?: Record<string, string> }
-function machine(on: Parameters<Parameters<typeof test>[2]>[1], opts: Opts = {}) {
+function machine(on: Parameters<NonNullable<Parameters<typeof test>[2]>>[1], opts: Opts = {}) {
   const files: Record<string, string> = {}
   on('session.start', async ($, e) => ({ cwd: e.cwd }) as never)
   on('session.id', async () => ({ value: 'sid-123' }) as never)
