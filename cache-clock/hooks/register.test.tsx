@@ -512,3 +512,38 @@ for (const surface of ['desktop', 'terminal'] as const) {
     expect(await ticks(), 'ticking again after off then on').toBeGreaterThanOrEqual(4)
   })
 }
+
+// The cache lifetime counts from the start of the last request, not from the end of its reply.
+for (const [name, requestStart, expected] of [
+  ['counts from the request start, not the reply end', 1_005_000, /3:35/],
+  ['ignores a request start from before this turn (a stale transcript read)', 900_000, /5:00/],
+  ['ignores a request start in the future (a clock mismatch)', 2_000_000, /5:00/],
+] as const) {
+  test(name, { timeoutMs: 30000 }, async ($, on) => {
+    on('session.start', async ($, e) => ({ cwd: e.cwd }) as never)
+    on('turn.start', async () => ({ turnId: 't' }) as never)
+    on('command.register', async () => ({ value: undefined }) as never)
+    const clock = mock.clock(on, { now: 1_000_000 })
+    on('session.id', async () => ({ value: 'sid' }) as never)
+    on('session.usage', async () => ({ value: { context: { tokens: 1000, window: 1_000_000 } } }) as never)
+    on('process.run', async () => ({ value: { exitCode: 0, stdout: `5m ${requestStart}\n`, stderr: '' } }) as never)
+    on('fs.exists', async () => ({ value: false }) as never)
+    on('fs.read', async () => ({ value: '' }) as never)
+    on('fs.write', async () => ({ value: undefined }) as never)
+    on('store.get', async () => ({ value: undefined }) as never)
+    on('store.set', async () => ({ value: undefined }) as never)
+    on('turn.complete', async () => ({ text: '' }) as never)
+    on('ui.render', { component: 'AbovePrompt' }, async ($, e) => {
+      const { Text } = $.ui.resolve(e)
+      return <Text>REST</Text>
+    })
+    const props = { isWorking: false, hasSurvey: false, maxRows: 10, bodyColumns: 100 } as never
+    await $.session.start({ source: 'startup', cwd: '/Users/test/vault', surface: 'terminal', isInteractive: true } as never)
+    await $.turn.start({ text: 'go', turnId: 't' } as never)
+    await clock.advance(90_000)
+    await $.turn.complete({ answer: '' } as never)
+    await clock.settle()
+    const v = await $.ui.mount({ plugin: 'cache-clock', surface: 'terminal', component: 'AbovePrompt', props })
+    expect(await v.find({ text: expected }), name).toBeDefined()
+  })
+}
