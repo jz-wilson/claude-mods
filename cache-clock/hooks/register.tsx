@@ -34,6 +34,10 @@ let sid = ''
 let home = ''
 let demo = false
 let detected: 'unknown' | '5m' | '1h' = 'unknown'
+// When the last request started, from the transcript; the cache lifetime counts from there.
+let detectedStart: number | undefined
+// When the main chat's current turn began; a request start before it is a stale read of the transcript.
+let turnStartedAt = 0
 let working = false
 let pinging = false
 
@@ -259,17 +263,28 @@ async function detect($: EngineInterface) {
   let r = await py('python3')
   if (!r || r.exitCode !== 0) r = (await py('python')) ?? r
   if (!r) return log($, 'ttl check failed: no python3 or python')
-  const out = r.stdout.trim()
-  if (out === '5m' || out === '1h') detected = out
+  const [length, start] = r.stdout.trim().split(/\s+/)
+  if (length === '5m' || length === '1h') detected = length
   else if (r.exitCode !== 0) await log($, `ttl check failed: ${r.stderr.slice(0, 200)}`)
+  const ms = Number(start)
+  detectedStart = Number.isFinite(ms) && ms > 0 ? ms : undefined
 }
 
-// A main-chat reply just ended: the cache is warm again from now.
+// The cache lifetime counts from the start of the last request, not the end of its reply, so a long
+// reply must not stretch the countdown. Falls back to `now` when the transcript gives no usable start.
+function cacheStart(now: number): number {
+  const start = detectedStart
+  if (start === undefined || start > now || start < turnStartedAt - 2000) return now
+  return start
+}
+
+// A main-chat reply just ended: the cache was last used when that reply's request started.
 async function restart($: EngineInterface) {
   const now = await $.clock.now()
   const { context } = await $.session.usage()
+  detectedStart = undefined
   await detect($).catch(() => undefined)
-  await setClock($, { lastEnd: now, ...ttl(), tokens: context.tokens ?? 0, now, note: '' })
+  await setClock($, { lastEnd: cacheStart(now), ...ttl(), tokens: context.tokens ?? 0, now, note: '' })
 }
 
 // Once a second: moves the countdown while the band shows.
@@ -330,7 +345,10 @@ export const register: Register = on => {
     if (off) return next(e)
     // Should the engine ever raise a turn for the ping's own fork, it is not the person's turn.
     // A helper's turn does not stop the main chat's band, and only a main-loop complete clears this.
-    if (e.agentId === undefined && !(pinging && e.text === PING_PROMPT)) working = true
+    if (e.agentId === undefined && !(pinging && e.text === PING_PROMPT)) {
+      working = true
+      turnStartedAt = await $.clock.now()
+    }
     return next(e)
   })
 
