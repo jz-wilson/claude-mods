@@ -292,6 +292,7 @@ Standing constraints and preferences given in this chat: words to avoid, things 
 
 ## Files to open first
 - \`<path>\`: why it matters, in one line. Only files the next step needs, at most 15. Paths only; never copy file content.
+For code, name the function, class or symbol and its file, for example \`checkBodyPaths\` in \`scripts/frontmatter.ts\`; give a line number only as a hint, written "around line N".
 
 ## Suggested skills and tools
 - \`<skill, CLI or connector>\`: when to use it, and any trap found in this chat. Skills the next session should load first come first.

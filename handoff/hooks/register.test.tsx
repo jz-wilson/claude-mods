@@ -264,6 +264,7 @@ test('/refresh <focus> and the refresh tool focus point the handoff; the focus i
   await clock.advance(10_000)
   expect(prompts[0] ?? '', 'the fork prompt carries the focus').toContain('"the Longhorn volume migration"')
   expect(prompts[0] ?? '', 'live-state claims are asked for').toContain('## Live-state claims')
+  expect(prompts[0] ?? '', 'code is cited by symbol, lines as a hint').toContain('give a line number only as a hint')
   const draft = Object.entries(files).find(([k]) => k.endsWith('-draft.md'))?.[1] ?? ''
   expect(draft, 'the draft carries the focus').toContain('Focus for this session: the Longhorn volume migration')
 
