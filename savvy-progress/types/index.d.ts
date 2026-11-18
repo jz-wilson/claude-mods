@@ -2,7 +2,13 @@ export type Phase = 'plan' | 'design' | 'delegate' | 'review' | 'close'
 
 export type PlannedTask = {
   title: string
+  /** Costume and color key: a legacy tier, or the one derived from `model` and `effort`. */
   tier: string
+  /** Model family (haiku, sonnet, opus, fable) when the plan named a model; '' otherwise. */
+  model?: string
+  effort?: string
+  /** The specialist agent the task will be delegated to, shown beside the model. */
+  agent?: string
   after: number[]
 }
 

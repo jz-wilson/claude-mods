@@ -40,6 +40,9 @@ Progress reporting: before any other work, call \`${STEP_TOOL}\` with \`total\` 
 const PANE = 'savvy-agents'
 const PHASES: readonly Phase[] = ['plan', 'design', 'delegate', 'review', 'close']
 const TIERS: readonly string[] = ['fable', 'heavy', 'careful', 'medium', 'light']
+const FAMILIES: readonly string[] = ['haiku', 'sonnet', 'opus', 'fable']
+const EFFORTS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max']
+const MAX_AGENT = 60
 // The tools' schemas are advice to the model, not a check: what a call may ask
 // the band and the panel to draw is bounded here.
 const MAX_TASKS = 200
@@ -57,7 +60,7 @@ type ProgressInput = {
   done?: number
   phase?: Phase
   finished?: boolean
-  tasks?: { title?: string; tier?: string; after?: number[] }[]
+  tasks?: { title?: string; tier?: string; model?: string; effort?: string; agent?: string; after?: number[] }[]
 }
 
 // ---------------------------------------------------------------------------
@@ -214,15 +217,41 @@ const tierName = (v: string): string => {
   return TIERS.includes(t) ? t : ''
 }
 
+// A model id or name reduced to its family ('claude-sonnet-5-5' -> 'sonnet'); '' when unknown.
+const familyOf = (v: unknown): string => {
+  const id = typeof v === 'string' ? v.toLowerCase() : ''
+  return FAMILIES.find(f => id.includes(f)) ?? ''
+}
+
+// Planned and running costumes both come from the model family and effort:
+// haiku is light, sonnet is medium (careful at high effort and up), opus is heavy.
+const costumeFor = (model: string, effort?: string): string => {
+  if (/fable/i.test(model)) return 'fable'
+  const family = modelTierOf(model)
+  if (family === 'haiku') return 'light'
+  if (family === 'sonnet') return effortLevelOf(effort) === 'high' ? 'careful' : 'medium'
+  return 'heavy'
+}
+
+const isText = (v: unknown): v is string => typeof v === 'string' && v.trim() !== ''
+
+// A task needs a title and a tier or a model; the rest is optional.
 const cleanTasks = (tasks: ProgressInput['tasks']): PlannedTask[] | undefined =>
   tasks
-    ?.filter(t => t.title?.trim())
+    ?.filter(t => isText(t?.title) && (isText(t.tier) || isText(t.model)))
     .slice(0, MAX_TASKS)
-    .map(t => ({
-      title: (t.title ?? '').trim(),
-      tier: tierName(t.tier ?? ''),
-      after: (t.after ?? []).filter(n => Number.isInteger(n) && n > 0).slice(0, MAX_AFTER),
-    }))
+    .map(t => {
+      const family = isText(t.model) ? familyOf(t.model) : ''
+      const effort = isText(t.effort) && EFFORTS.includes(t.effort.trim().toLowerCase()) ? t.effort.trim().toLowerCase() : undefined
+      return {
+        title: (t.title ?? '').trim(),
+        tier: family ? costumeFor(family, effort) : tierName(t.tier ?? ''),
+        ...(family ? { model: family } : {}),
+        ...(family && effort ? { effort } : {}),
+        ...(isText(t.agent) ? { agent: clip(t.agent.trim(), MAX_AGENT) } : {}),
+        after: (Array.isArray(t.after) ? t.after : []).filter(n => Number.isInteger(n) && n > 0).slice(0, MAX_AFTER),
+      }
+    })
 
 const merge = (prev: Flow | null, input: ProgressInput): Flow => {
   // A new title means a new flow: never carry counters over from an earlier one.
@@ -394,11 +423,11 @@ const TIER_COLOR: Record<string, string> = {
 const colorOf = (tier: string): string => TIER_COLOR[tier] ?? '#888780'
 
 const TIER_MODEL: Record<string, [model: string, effort: string]> = {
-  fable: ['Fable', 'high'],
+  fable: ['Opus', 'xhigh'],
   heavy: ['Opus', 'xhigh'],
-  careful: ['Opus', 'high'],
-  medium: ['Opus', 'medium'],
-  light: ['Opus', 'low'],
+  careful: ['Sonnet', 'high'],
+  medium: ['Sonnet', 'medium'],
+  light: ['Haiku', 'medium'],
 }
 
 // "Opus · xhigh", with the effort word in the panel's language; '' for an unknown tier.
@@ -406,6 +435,13 @@ const tierModel = (tier: string): string => {
   const m = TIER_MODEL[tier]
   return m ? `${m[0]} · ${effortWord(m[1])}` : ''
 }
+
+// A planned task's model line: the model it named ("Sonnet · high"), else its tier's.
+const plannedModel = (p: PlannedTask): string =>
+  p.model ? `${p.model.charAt(0).toUpperCase()}${p.model.slice(1)}${p.effort ? ' · ' + effortWord(p.effort) : ''}` : tierModel(p.tier)
+
+// The colored word before it: the agent when the plan named one, else the tier.
+const plannedHead = (p: PlannedTask, tier: string): string => p.agent || tierWord(tier)
 
 // "Opus 5.5 · low" for a run, or just the model when no effort was seen.
 const runModel = (a: AgentRun): string => (a.effort ? `${modelName(a.model)} · ${effortWord(a.effort)}` : modelName(a.model))
@@ -465,11 +501,18 @@ const costOf = (model: string, u: Usage, isRequest: boolean): number => {
 const windowOf = (model: string): number => (/haiku-4|claude-3/i.test(model) ? 200_000 : 1_000_000)
 
 // `savvy-careful`, or `savvy-flow:savvy-careful` when the agents ship in a plugin.
-const tierOf = (type: string): string => {
+const savvyTier = (type: string): string => {
   const bare = type.replace(/^[^:]*:/, '')
   const t = bare.replace(/^savvy-/, '').toLowerCase()
-  return Object.hasOwn(TIER_COLOR, t) && bare.startsWith('savvy-') ? t : 'other'
+  return Object.hasOwn(TIER_COLOR, t) && bare.startsWith('savvy-') ? t : ''
 }
+
+// Any other agent type takes its costume from the model it really runs on.
+const tierOf = (type: string, model = '', effort?: string): string =>
+  savvyTier(type) || (familyOf(model) ? costumeFor(model, effort) : 'other')
+
+// The colored word of a running row: the tier for a savvy worker, else the agent's own name.
+const runLabel = (a: AgentRun, tier: string): string => (savvyTier(a.type) ? tierWord(tier) : a.type)
 
 const modelName = (id: string): string => {
   const m = /(fable|mythos|opus|sonnet|haiku)-(\d+)(?:-(\d{1,2})(?!\d))?/i.exec(id)
@@ -636,7 +679,7 @@ const COSTUMES: Record<string, (f: Fill, t: string) => void> = {
   other: f => crabBody(f),
 }
 
-const costumeOf = (type: string): string => (type === 'Explore' ? 'explore' : tierOf(type))
+const costumeOf = (a: AgentRun): string => (a.type === 'Explore' ? 'explore' : tierOf(a.type, a.model, a.effort))
 
 const CRAB_SCALE = 1.1
 
@@ -721,7 +764,7 @@ const ctxOf = (a: AgentRun): number => (a.contextMax ? Math.min(100, Math.round(
 
 const agentSvg = (W: number, a: AgentRun, at: number): string => {
   const s = tr()
-  const tier = tierOf(a.type)
+  const tier = tierOf(a.type, a.model, a.effort)
   const color = colorOf(tier)
   const ctx = ctxOf(a)
   const textW = W - 42 - 22
@@ -738,9 +781,9 @@ const agentSvg = (W: number, a: AgentRun, at: number): string => {
   return svg(
     W,
     66,
-    `${rowCrab(W, 0, 14, costumeOf(a.type), false, a.status === 'running')}
+    `${rowCrab(W, 0, 14, costumeOf(a), false, a.status === 'running')}
 <text class="t" ${startText(W, 42, 18)} font-family="${FONT}" font-size="13" font-weight="600">${xml(fitText(a.description || a.type, 13, textW))}</text>
-<text ${startText(W, 42, 34)} font-family="${FONT}" font-size="11"><tspan fill="${color}">${xml(tier === 'other' ? a.type : tierWord(tier))}</tspan><tspan class="s">  ${xml(meta.join('  ·  '))}</tspan></text>
+<text ${startText(W, 42, 34)} font-family="${FONT}" font-size="11"><tspan fill="${color}">${xml(runLabel(a, tier))}</tspan><tspan class="s">  ${xml(meta.join('  ·  '))}</tspan></text>
 ${steps && stepsW > 30 ? `<text class="t" ${startText(W, 42, 49)} font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${xml(fitText(steps, 11, stepsW))}</text>` : ''}
 <text class="s" ${endText(W, 42 + barW, 49, true)} font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${stats}</text>
 <rect class="k" x="${mx(W, 42, barW)}" y="55" width="${barW}" height="4" rx="2"/><rect${progress === null ? ' class="m"' : ''} x="${mx(W, 42, fillW)}" y="55" width="${fillW}" height="4" rx="2"${progress === null ? '' : ` fill="${color}"`}/>
@@ -753,14 +796,14 @@ const plannedSvg = (W: number, p: Planned): string => {
   const tier = p.tier in TIER_COLOR ? p.tier : 'other'
   const color = colorOf(tier)
   const textW = W - 42 - 22
-  const meta = [tierModel(tier)]
+  const meta = [plannedModel(p)]
   if (p.after.length) meta.push(`${tr().after} ${p.after.join(', ')}`)
   return svg(
     W,
     46,
     `${rowCrab(W, 0, 6, tier, true)}
 <text class="s" ${startText(W, 42, 18)} font-family="${FONT}" font-size="13" font-weight="600">${xml(fitText(`${p.n}. ${p.title}`, 13, textW))}</text>
-<text ${startText(W, 42, 34)} font-family="${FONT}" font-size="11"><tspan fill="${color}">${xml(tierWord(tier))}</tspan><tspan class="m">  ${xml(meta.filter(Boolean).join('  ·  '))}</tspan></text>
+<text ${startText(W, 42, 34)} font-family="${FONT}" font-size="11"><tspan fill="${color}">${xml(plannedHead(p, tier))}</tspan><tspan class="m">  ${xml(meta.filter(Boolean).join('  ·  '))}</tspan></text>
 ${statusMark(mx(W, W - 8), 16, 'planned', color)}
 <line class="ln" x1="0" y1="45.5" x2="${W}" y2="45.5"/>`,
   )
@@ -768,8 +811,8 @@ ${statusMark(mx(W, W - 8), 16, 'planned', color)}
 
 const compactSvg = (W: number, list: AgentRun[], planned: Planned[], t: ReturnType<typeof totals>): string => {
   const icons = [
-    ...list.filter(a => a.status === 'running').map(a => ({ k: costumeOf(a.type), c: colorOf(tierOf(a.type)), s: 'running', dim: false })),
-    ...list.filter(a => a.status !== 'running').map(a => ({ k: costumeOf(a.type), c: colorOf(tierOf(a.type)), s: a.status, dim: false })),
+    ...list.filter(a => a.status === 'running').map(a => ({ k: costumeOf(a), c: colorOf(tierOf(a.type, a.model, a.effort)), s: 'running', dim: false })),
+    ...list.filter(a => a.status !== 'running').map(a => ({ k: costumeOf(a), c: colorOf(tierOf(a.type, a.model, a.effort)), s: a.status, dim: false })),
     ...planned.map(p => ({ k: p.tier in TIER_COLOR ? p.tier : 'other', c: colorOf(p.tier), s: 'planned', dim: true })),
   ]
   const fit = Math.max(1, Math.floor((W - 150) / 36))
@@ -939,10 +982,14 @@ export const register: Register = (on, options) => {
               type: 'object',
               properties: {
                 title: { type: 'string', description: 'A few words; reused verbatim as the Agent description.' },
-                tier: { type: 'string', enum: [...TIERS] },
+                tier: { type: 'string', enum: [...TIERS], description: 'Legacy savvy tier; give it or `model`.' },
+                model: { type: 'string', description: 'Model the task will run on: haiku, sonnet, opus or fable (a full model id is read by family). Give it or `tier`.' },
+                effort: { type: 'string', enum: [...EFFORTS], description: 'Effort the task will run at.' },
+                agent: { type: 'string', description: 'Agent type the task is delegated to, e.g. software-engineer.' },
                 after: { type: 'array', items: { type: 'integer' }, description: 'Numbers of the tasks this one waits for.' },
               },
-              required: ['title', 'tier'],
+              required: ['title'],
+              anyOf: [{ required: ['tier'] }, { required: ['model'] }],
             },
           },
         },
@@ -1266,7 +1313,7 @@ export const register: Register = (on, options) => {
       return <ui.Raster key={key} columns={columns} rows={rows} cells={draw(mode === 'walk' ? at : STILL_T)} />
     }
     const row = (a: AgentRun) => {
-      const tier = tierOf(a.type)
+      const tier = tierOf(a.type, a.model, a.effort)
       const color = colorOf(tier)
       const ctx = ctxOf(a)
       const progress = progressOf(a)
@@ -1331,7 +1378,7 @@ export const register: Register = (on, options) => {
               <Text color={badge.color}>{badge.badge}</Text>
             </Box>
             <Text wrap="truncate-end">
-              <Text color={color}>{tier === 'other' ? a.type : tierWord(tier)}</Text>
+              <Text color={color}>{runLabel(a, tier)}</Text>
               <Text dimColor>
                 {' '}
                 {model}
@@ -1463,7 +1510,7 @@ export const register: Register = (on, options) => {
         {p.isCompact ? (
           <Text wrap="truncate-end">
             {[...running, ...finished].map(a => (
-              <Text key={a.id} color={colorOf(tierOf(a.type))}>
+              <Text key={a.id} color={colorOf(tierOf(a.type, a.model, a.effort))}>
                 {STATUS_GLYPH[a.status]}{' '}
               </Text>
             ))}
@@ -1490,7 +1537,7 @@ export const register: Register = (on, options) => {
                   </Text>
                   <Text dimColor wrap="truncate-end">
                     {'  '}
-                    {tierWord(tier)} · {tierModel(tier)}
+                    {plannedHead(pl, tier)} · {plannedModel(pl)}
                     {pl.after.length ? ` · ${s.after} ${pl.after.join(', ')}` : ''}
                   </Text>
                 </Box>
