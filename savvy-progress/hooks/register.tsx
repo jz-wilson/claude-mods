@@ -234,21 +234,23 @@ const costumeFor = (model: string, effort?: string): string => {
 }
 
 const isText = (v: unknown): v is string => typeof v === 'string' && v.trim() !== ''
+// One line of text: a newline would break a fixed-height panel row.
+const oneLine = (v: string): string => v.replace(/\s+/g, ' ').trim()
 
-// A task needs a title and a tier or a model; the rest is optional.
+// A task needs a title and a tier or a known model family; the rest is optional.
 const cleanTasks = (tasks: ProgressInput['tasks']): PlannedTask[] | undefined =>
   tasks
-    ?.filter(t => isText(t?.title) && (isText(t.tier) || isText(t.model)))
+    ?.filter(t => isText(t?.title) && (isText(t.tier) || familyOf(t.model) !== ''))
     .slice(0, MAX_TASKS)
     .map(t => {
       const family = isText(t.model) ? familyOf(t.model) : ''
       const effort = isText(t.effort) && EFFORTS.includes(t.effort.trim().toLowerCase()) ? t.effort.trim().toLowerCase() : undefined
       return {
-        title: (t.title ?? '').trim(),
+        title: oneLine(t.title ?? ''),
         tier: family ? costumeFor(family, effort) : tierName(t.tier ?? ''),
         ...(family ? { model: family } : {}),
         ...(family && effort ? { effort } : {}),
-        ...(isText(t.agent) ? { agent: clip(t.agent.trim(), MAX_AGENT) } : {}),
+        ...(isText(t.agent) ? { agent: clip(oneLine(t.agent), MAX_AGENT) } : {}),
         after: (Array.isArray(t.after) ? t.after : []).filter(n => Number.isInteger(n) && n > 0).slice(0, MAX_AFTER),
       }
     })

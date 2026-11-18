@@ -96,12 +96,13 @@ for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: hostile model, effort and agent values are bounded and a task with no tier or model is dropped`, async ($, on) => {
     on('ui.open', () => ({ value: { isPlaced: true } }))
     const tasks = [
-      { title: 'Hostile', model: '__proto__', effort: '<script>', agent: '<b>'.repeat(500) },
+      { title: 'Hostile\nrow', model: 'sonnet<script>', effort: '<script>', agent: 'a\nb' + '<b>'.repeat(500) },
       { title: 'Object', model: { x: 1 }, effort: 5, agent: {} },
       { title: 'Neither' },
       { title: 'Blank model', model: '  ' },
+      { title: 'Unknown model', model: '__proto__' },
     ]
-    // Only the task that gave a model string is kept; the object model, no tier and blank model are dropped.
+    // Only the task with a known model family is kept; object, missing, blank and unknown models are dropped.
     expect(await $.tool.call({ tool: PROGRESS, title: 'Hostile plan', phase: 'delegate', tasks } as never)).toMatchObject({ result: 'ok: Tasks 0/1' })
     if (surface === 'desktop') {
       const drawn = await paneSvg(await mountPane($))
@@ -109,6 +110,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
       expect(drawn).not.toContain('[object')
       expect(drawn).not.toContain('native code')
       expect(drawn).not.toContain('<b><b><b><b><b><b><b><b><b><b><b><b>')
+      expect(drawn).toContain('Hostile row')
+      expect(drawn).not.toMatch(/a\nb/)
     }
   })
 
