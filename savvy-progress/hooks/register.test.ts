@@ -58,6 +58,80 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(drawn).not.toContain('[object')
   })
 
+  const paneSvg = async (mounted: unknown) =>
+    (await (mounted as { findAll: (q: { type: 'Svg' }) => Promise<{ props: Record<string, unknown> }[]> }).findAll({ type: 'Svg' }))
+      .map(el => String(el.props.source))
+      .join('')
+  const mountPane = ($: { ui: { mount: (a: never) => Promise<unknown> } }) =>
+    $.ui.mount({ plugin: PLUGIN, surface, component: 'Pane', requestId: 'savvy-agents', props: pane } as never)
+
+  test(`${surface}: a plan with model and effort draws the careful costume and its label`, async ($, on) => {
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    const tasks = [{ title: 'Build it', model: 'claude-sonnet-5-5', effort: 'high', agent: 'software-engineer', after: [1] }]
+    expect(await $.tool.call({ tool: PROGRESS, title: 'Model plan', phase: 'delegate', tasks } as never)).toMatchObject({ result: 'ok: Tasks 0/1' })
+    if (surface === 'desktop') {
+      const drawn = await paneSvg(await mountPane($))
+      expect(drawn).toContain('c-careful')
+      expect(drawn).toContain('Sonnet · high')
+      expect(drawn).toContain('software-engineer')
+    } else {
+      const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'Pane', requestId: 'savvy-agents', props: pane })
+      expect(await ui.find({ text: /software-engineer · Sonnet · high/ })).toBeDefined()
+    }
+  })
+
+  test(`${surface}: a legacy tier plan still draws`, async ($, on) => {
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    await $.tool.call({ tool: PROGRESS, title: 'Tier plan', phase: 'delegate', tasks: [{ title: 'Old way', tier: 'heavy' }] } as never)
+    if (surface === 'desktop') {
+      const drawn = await paneSvg(await mountPane($))
+      expect(drawn).toContain('c-heavy')
+      expect(drawn).toContain('Opus · xhigh')
+    } else {
+      const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'Pane', requestId: 'savvy-agents', props: pane })
+      expect(await ui.find({ text: /Opus · xhigh/ })).toBeDefined()
+    }
+  })
+
+  test(`${surface}: hostile model, effort and agent values are bounded and a task with no tier or model is dropped`, async ($, on) => {
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    const tasks = [
+      { title: 'Hostile\nrow', model: 'sonnet<script>', effort: '<script>', agent: 'a\nb' + '<b>'.repeat(500) },
+      { title: 'Object', model: { x: 1 }, effort: 5, agent: {} },
+      { title: 'Neither' },
+      { title: 'Blank model', model: '  ' },
+      { title: 'Unknown model', model: '__proto__' },
+    ]
+    // Only the task with a known model family is kept; object, missing, blank and unknown models are dropped.
+    expect(await $.tool.call({ tool: PROGRESS, title: 'Hostile plan', phase: 'delegate', tasks } as never)).toMatchObject({ result: 'ok: Tasks 0/1' })
+    if (surface === 'desktop') {
+      const drawn = await paneSvg(await mountPane($))
+      expect(drawn).not.toContain('<script>')
+      expect(drawn).not.toContain('[object')
+      expect(drawn).not.toContain('native code')
+      expect(drawn).not.toContain('<b><b><b><b><b><b><b><b><b><b><b><b>')
+      expect(drawn).toContain('Hostile row')
+      expect(drawn).not.toMatch(/a\nb/)
+    }
+  })
+
+  // Not a savvy agent type: the costume comes from the model the run really started on.
+  test(`${surface}: a non-savvy agent on haiku gets the light costume`, async ($, on) => {
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    on('clock.now', () => ({ value: 1000 }) as never)
+    on('agent.spawn', () => ({ model: 'claude-haiku-5-5', agentId: 'a1' }) as never)
+    await $.agent.spawn({ tool_use_id: 's1', prompt: 'x', description: 'Fix typo', subagentType: 'software-engineer' } as never)
+    if (surface === 'desktop') {
+      const drawn = await paneSvg(await mountPane($))
+      expect(drawn).toContain('c-light')
+      expect(drawn).toContain('software-engineer')
+      expect(drawn).toContain('Haiku 5.5')
+    } else {
+      const ui = await $.ui.mount({ plugin: PLUGIN, surface, component: 'Pane', requestId: 'savvy-agents', props: pane })
+      expect(await ui.find({ text: /software-engineer/ })).toBeDefined()
+    }
+  })
+
   // The stored title is clipped, so the incoming one is clipped before the two are compared.
   test(`${surface}: a title past the cap is still the same flow`, async ($, on) => {
     on('ui.open', () => ({ value: { isPlaced: true } }))
